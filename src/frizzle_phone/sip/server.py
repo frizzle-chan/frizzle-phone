@@ -12,18 +12,24 @@ import string
 from frizzle_phone.rtp.pcmu import generate_rhythm
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import SipMessage, build_response, parse_request
-from frizzle_phone.sip.sdp import build_sdp_answer
+from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_METHODS = "INVITE, ACK, BYE, CANCEL, REGISTER"
 
 
 @dataclasses.dataclass
 class Call:
     call_id: str
     from_tag: str
+    to_tag: str
     remote_addr: tuple[str, int]
+    remote_contact: str
+    remote_rtp_addr: tuple[str, int]
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
+    terminated: bool = False
 
 
 def get_server_ip() -> str:
@@ -58,6 +64,11 @@ class SipServer(asyncio.DatagramProtocol):
         self._transport = transport  # type: ignore[assignment]
         logger.info("SIP server listening")
 
+    def connection_lost(self, exc: Exception | None) -> None:
+        if exc is not None:
+            logger.warning("Connection lost: %s", exc)
+        self._cleanup_all_calls()
+
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         try:
             msg = parse_request(data)
@@ -78,14 +89,32 @@ class SipServer(asyncio.DatagramProtocol):
         if handler is not None:
             handler(msg, addr)
         else:
-            logger.warning("Unhandled method: %s", msg.method)
+            # Bug 11: respond 405 instead of silently ignoring
+            response = build_response(
+                msg,
+                405,
+                "Method Not Allowed",
+                extra_headers=[("Allow", ALLOWED_METHODS)],
+            )
+            self._send(response, addr)
 
     def _send(self, data: bytes, addr: tuple[str, int]) -> None:
         if self._transport is not None:
             self._transport.sendto(data, addr)
 
     def _handle_register(self, msg: SipMessage, addr: tuple[str, int]) -> None:
-        response = build_response(msg, 200, "OK")
+        # Bug 10: echo Contact with expires
+        contact = msg.header("Contact")
+        extra: list[tuple[str, str]] = []
+        if contact is not None:
+            extra.append(("Contact", f"{contact};expires=3600"))
+        response = build_response(
+            msg,
+            200,
+            "OK",
+            to_tag=_generate_tag(),
+            extra_headers=extra,
+        )
         self._send(response, addr)
 
     def _handle_invite(self, msg: SipMessage, addr: tuple[str, int]) -> None:
@@ -95,21 +124,50 @@ class SipServer(asyncio.DatagramProtocol):
         if ";tag=" in from_header:
             from_tag = from_header.split(";tag=")[1].split(";")[0]
 
+        # Parse SDP offer for remote RTP address (Bug 2)
+        remote_rtp_addr = (addr[0], 0)
+        if msg.body:
+            offer = parse_sdp_offer(msg.body)
+            remote_rtp_addr = (offer.connection_address, offer.audio_port)
+
+        # Extract Contact header from INVITE (Bug 12)
+        remote_contact = msg.header("Contact") or f"sip:{addr[0]}:{addr[1]}"
+
+        # Generate to_tag once per dialog (Bug 1)
+        to_tag = _generate_tag()
+
+        # Clean up existing call if re-INVITE (Bug 14)
+        existing = self._calls.get(call_id)
+        if existing is not None:
+            existing.terminated = True
+            if existing.rtp_stream is not None:
+                existing.rtp_stream.stop()
+
         call = Call(
             call_id=call_id,
             from_tag=from_tag,
+            to_tag=to_tag,
             remote_addr=addr,
+            remote_contact=remote_contact,
+            remote_rtp_addr=remote_rtp_addr,
             invite_request=msg,
         )
         self._calls[call_id] = call
 
-        # 100 Trying
+        # 100 Trying — no to_tag (Bug 7)
         trying = build_response(msg, 100, "Trying")
         self._send(trying, addr)
 
-        # 200 OK with SDP
+        # 200 OK with SDP, to_tag, and Contact (Bug 1, 6)
         sdp = build_sdp_answer(self._server_ip)
-        ok = build_response(msg, 200, "OK", body=sdp)
+        ok = build_response(
+            msg,
+            200,
+            "OK",
+            body=sdp,
+            to_tag=to_tag,
+            extra_headers=[("Contact", f"<sip:frizzle@{self._server_ip}:5060>")],
+        )
         self._send(ok, addr)
 
     def _handle_ack(self, msg: SipMessage, addr: tuple[str, int]) -> None:
@@ -119,47 +177,65 @@ class SipServer(asyncio.DatagramProtocol):
             logger.warning("ACK for unknown call: %s", call_id)
             return
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         done_future: asyncio.Future[None] = loop.create_future()
+        # Bug 2: use parsed remote RTP address instead of hardcoded port
         call.rtp_stream = RtpStream(
             loop=loop,
-            remote_addr=(addr[0], 10000),
+            remote_addr=call.remote_rtp_addr,
             audio_buf=self._audio_buf,
             done_callback=done_future,
         )
-        done_future.add_done_callback(lambda _f: self._send_bye(call))
+        # Bug 13: use call_soon instead of direct callback to avoid reentrancy
+        done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
         asyncio.ensure_future(call.rtp_stream.start())
 
     def _handle_bye(self, msg: SipMessage, addr: tuple[str, int]) -> None:
         call_id = msg.header("Call-ID") or ""
         call = self._calls.pop(call_id, None)
-        if call is not None and call.rtp_stream is not None:
-            call.rtp_stream.stop()
-        response = build_response(msg, 200, "OK")
+        if call is not None:
+            # Bug 15: set terminated before cleanup
+            call.terminated = True
+            if call.rtp_stream is not None:
+                call.rtp_stream.stop()
+        tag = call.to_tag if call else _generate_tag()
+        response = build_response(msg, 200, "OK", to_tag=tag)
         self._send(response, addr)
 
     def _handle_cancel(self, msg: SipMessage, addr: tuple[str, int]) -> None:
         call_id = msg.header("Call-ID") or ""
 
+        # Bug 8: look up call first, send 481 if not found
+        call = self._calls.pop(call_id, None)
+        if call is None:
+            no_match = build_response(msg, 481, "Call/Transaction Does Not Exist")
+            self._send(no_match, addr)
+            return
+
         # 200 OK for the CANCEL itself
         ok = build_response(msg, 200, "OK")
         self._send(ok, addr)
 
-        call = self._calls.pop(call_id, None)
-        if call is not None:
-            if call.rtp_stream is not None:
-                call.rtp_stream.stop()
-            # 487 Request Terminated for the original INVITE
-            if call.invite_request is not None:
-                terminated = build_response(
-                    call.invite_request,
-                    487,
-                    "Request Terminated",
-                )
-                self._send(terminated, addr)
+        call.terminated = True
+        if call.rtp_stream is not None:
+            call.rtp_stream.stop()
+        # 487 Request Terminated for the original INVITE
+        if call.invite_request is not None:
+            terminated = build_response(
+                call.invite_request,
+                487,
+                "Request Terminated",
+                to_tag=call.to_tag,
+            )
+            self._send(terminated, addr)
 
     def _send_bye(self, call: Call) -> None:
         """Send a BYE to the remote phone after audio finishes."""
+        # Bug 15: check terminated flag to prevent double-BYE
+        if call.terminated:
+            return
+        call.terminated = True
+
         if call.rtp_stream is not None:
             call.rtp_stream.stop()
 
@@ -168,14 +244,21 @@ class SipServer(asyncio.DatagramProtocol):
         self._calls.pop(call_id, None)
 
         via_branch = _generate_branch()
-        tag = _generate_tag()
+        # Bug 12: use remote_contact as Request-URI
+        request_uri = call.remote_contact
+        # Strip angle brackets if present
+        if request_uri.startswith("<") and request_uri.endswith(">"):
+            request_uri = request_uri[1:-1]
+
         lines = [
-            f"BYE sip:{remote_addr[0]}:{remote_addr[1]} SIP/2.0",
+            f"BYE {request_uri} SIP/2.0",
             f"Via: SIP/2.0/UDP {self._server_ip}:5060;branch={via_branch}",
-            f"From: <sip:frizzle@{self._server_ip}>;tag={tag}",
-            f"To: <sip:{remote_addr[0]}>",
+            # Bug 3: From uses our to_tag, To uses their from_tag
+            f"From: <sip:frizzle@{self._server_ip}>;tag={call.to_tag}",
+            f"To: <sip:{remote_addr[0]}>;tag={call.from_tag}",
             f"Call-ID: {call_id}",
             "CSeq: 1 BYE",
+            "Max-Forwards: 70",
             "Content-Length: 0",
             "",
             "",
@@ -184,12 +267,20 @@ class SipServer(asyncio.DatagramProtocol):
         self._send(bye_msg, remote_addr)
         logger.info("Sent BYE for call %s", call_id)
 
+    def _cleanup_all_calls(self) -> None:
+        """Stop all active calls during shutdown (Bug 16)."""
+        for call in self._calls.values():
+            call.terminated = True
+            if call.rtp_stream is not None:
+                call.rtp_stream.stop()
+        self._calls.clear()
+
 
 async def start_server(
     host: str = "0.0.0.0",
     port: int = 5060,
 ) -> asyncio.DatagramTransport:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
         SipServer, local_addr=(host, port)
     )

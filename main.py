@@ -12,9 +12,11 @@ logging.basicConfig(
 
 
 async def main() -> None:
-    await start_server("0.0.0.0", 5060)
-    # Run forever until interrupted
-    await asyncio.Event().wait()
+    transport = await start_server("0.0.0.0", 5060)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        transport.close()
 
 
 if __name__ == "__main__":
