@@ -1,0 +1,29 @@
+{
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "app",
+    "workspaceFolder": "/app",
+    "remoteUser": "frizzle_phone",
+    "containerEnv": {
+        "CLAUDE_CONFIG_DIR": "${containerWorkspaceFolder}/.claude-user",
+        "DATABASE_URL": "postgresql://frizzle_phone:frizzle_phone@db:5432/frizzle_phone"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "Anthropic.claude-code",
+                "GitHub.copilot",
+                "GitHub.copilot-chat",
+                "GitHub.vscode-pull-request-github",
+                "astral-sh.ty",
+                "charliermarsh.ruff",
+                "editorconfig.editorconfig",
+                "ms-python.python",
+                "ms-ossdata.vscode-pgsql",
+                "ryanluker.vscode-coverage-gutters"
+            ]
+        }
+    },
+    "postCreateCommand": {
+        "uv": "rm -rf .venv && uv sync && uv run lefthook install"
+    }
+}
