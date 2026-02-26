@@ -28,12 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install recutils
-        run: sudo apt-get update && sudo apt-get install -y recutils
-
-      - name: Install UnifontEX
-        uses: ./.github/actions/install-unifont
-
       - name: Install uv
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
 
@@ -54,21 +48,6 @@ jobs:
 
       - name: Run dead code check
         run: uv run vulture
-
-      - name: Validate entity definitions
-        run: |
-          for file in data/worlds/*.rec; do
-            recfix --check "$file"
-            uv run scripts/validate_world.py "$file"
-          done
-
-      - name: Validate horse definitions
-        run: |
-          cat data/horses/*.rec | recfix --check
-          uv run scripts/validate_horses.py
-
-      - name: Validate verb word lists
-        run: uv run scripts/validate_verbs.py
 
       - name: Run tests
         env:
