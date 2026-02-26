@@ -1,0 +1,47 @@
+pre-commit:
+  commands:
+    branch-guard:
+      run: |
+        BRANCH=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$BRANCH" = "master" ]; then
+          echo "❌ Direct commits to master are not allowed. Please create a branch first."
+          exit 1
+        fi
+  jobs:
+    - name: ruff check
+      glob: "*.py"
+      run: uv run ruff check --fix {staged_files}
+      stage_fixed: true
+
+    - name: ruff format
+      glob: "*.py"
+      run: uv run ruff format {staged_files}
+      stage_fixed: true
+
+    - name: ty check
+      glob: "*.py"
+      run: uv run ty check {staged_files}
+
+    - name: vulture check
+      glob: "*.py"
+      run: uv run vulture {staged_files} vulture_whitelist.py
+
+    - name: squawk check
+      glob: "migrations/*.sql"
+      run: uv run squawk {staged_files}
+
+    - name: pytest
+      exclude:
+        - "*.md"
+        - "LICENSE"
+        - ".gitignore"
+        - ".dockerignore"
+        - "Dockerfile"
+        - ".editorconfig"
+        - ".env.example"
+        - ".github/**"
+        - ".devcontainer/**"
+        - ".vscode/**"
+        - "lefthook.yml"
+        - ".squawk.toml"
+      run: uv run pytest

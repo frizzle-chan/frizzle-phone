@@ -1,0 +1,32 @@
+version: '3.8'
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: devcontainer
+    command: sleep infinity
+    volumes:
+      - ..:/app:cached
+    environment:
+      - DATABASE_URL=postgresql://frizzle_phone:frizzle_phone@db:5432/frizzle_phone
+
+  db:
+    image: docker.io/library/postgres:18.1
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    environment:
+      POSTGRES_USER: frizzle_phone
+      POSTGRES_PASSWORD: frizzle_phone
+      POSTGRES_DB: frizzle_phone
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "frizzle_phone", "-d", "frizzle_phone"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432"
+
+volumes:
+  postgres-data:
