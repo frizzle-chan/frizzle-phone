@@ -48,7 +48,7 @@ exclude = ["vulture_whitelist.py"]
 [tool.vulture]
 paths = ["src/frizzle_phone/"]
 min_confidence = 90
-ignore_names = ["clean_user_state", "datagram_received", "connection_made", "connection_lost", "error_received"]
+ignore_names = ["clean_user_state", "datagram_received", "connection_made", "connection_lost", "error_received", "header_values"]
 exclude = ["*_unit_test.py", "*_image_test.py"]
 
 [tool.ruff.lint]
