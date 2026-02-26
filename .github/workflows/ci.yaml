@@ -60,4 +60,9 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Run squawk check
-        run: uv run squawk migrations/*.sql
+        run: |
+          shopt -s nullglob
+          files=(migrations/*.sql)
+          if [ ${#files[@]} -gt 0 ]; then
+            uv run squawk "${files[@]}"
+          fi

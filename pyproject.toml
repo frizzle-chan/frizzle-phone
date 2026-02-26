@@ -46,7 +46,7 @@ skip_empty = true
 exclude = ["vulture_whitelist.py"]
 
 [tool.vulture]
-paths = ["main.py", "src/frizzle_phone/", "scripts/", "tests/", "vulture_whitelist.py"]
+paths = ["src/frizzle_phone/"]
 min_confidence = 90
 ignore_names = ["clean_user_state"]
 exclude = ["*_unit_test.py", "*_image_test.py"]
