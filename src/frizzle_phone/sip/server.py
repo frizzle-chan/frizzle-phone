@@ -77,12 +77,9 @@ class Call:
 
 def get_server_ip() -> str:
     """Detect the local IP address by opening a UDP socket."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
-    finally:
-        sock.close()
 
 
 def _extract_branch(msg: SipMessage) -> str | None:
@@ -95,6 +92,13 @@ def _extract_branch(msg: SipMessage) -> str | None:
         if param.startswith("branch="):
             return param[7:]
     return None
+
+
+def _extract_tag(header_value: str) -> str:
+    """Extract the tag parameter from a SIP From/To header value."""
+    if ";tag=" in header_value:
+        return header_value.split(";tag=")[1].split(";")[0]
+    return ""
 
 
 def _generate_tag() -> str:
@@ -151,8 +155,14 @@ class SipServer(asyncio.DatagramProtocol):
         logger.debug("Raw from %s:\n%s", addr, data.decode("utf-8", errors="replace"))
         try:
             msg = parse_request(data)
-        except Exception:
+        except (ValueError, UnicodeDecodeError, IndexError):
             logger.exception("Failed to parse SIP message from %s", addr)
+            return
+
+        # Detect SIP responses (e.g. "SIP/2.0 200 OK") and ignore them —
+        # we are a UAS and don't process responses to our own requests.
+        if msg.method.startswith("SIP/"):
+            logger.debug("Ignoring SIP response from %s: %s", addr, msg.uri)
             return
 
         logger.info("Received %s from %s", msg.method, addr)
@@ -249,10 +259,7 @@ class SipServer(asyncio.DatagramProtocol):
         resp_addr: tuple[str, int],
     ) -> None:
         call_id = msg.header("Call-ID") or ""
-        from_header = msg.header("From") or ""
-        from_tag = ""
-        if ";tag=" in from_header:
-            from_tag = from_header.split(";tag=")[1].split(";")[0]
+        from_tag = _extract_tag(msg.header("From") or "")
 
         # Parse SDP offer for remote RTP address (Bug 2)
         remote_rtp_addr = (addr[0], 0)
@@ -334,6 +341,10 @@ class SipServer(asyncio.DatagramProtocol):
         # Notify INVITE transaction that ACK arrived (stops Timer G)
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
+
+        # Guard against duplicate ACK starting a second RTP stream
+        if call.rtp_stream is not None:
+            return
 
         loop = asyncio.get_running_loop()
         done_future: asyncio.Future[None] = loop.create_future()
@@ -479,13 +490,8 @@ class SipServer(asyncio.DatagramProtocol):
 
     def _cleanup_all_calls(self) -> None:
         """Stop all active calls and transactions during shutdown (Bug 16)."""
-        for txn in list(self._invite_txns.values()):
-            txn.terminate()
-        self._invite_txns.clear()
         for call in self._calls.values():
-            call.terminated = True
-            if call.rtp_stream is not None:
-                call.rtp_stream.stop()
+            self._terminate_call(call)
         self._calls.clear()
         for task in self._rtp_tasks:
             task.cancel()
