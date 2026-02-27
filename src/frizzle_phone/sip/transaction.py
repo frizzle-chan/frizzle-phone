@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,13 @@ T1 = 0.5  # seconds — RTT estimate
 T2 = 4.0  # seconds — max retransmit interval
 T4 = 5.0  # seconds — max network round-trip time
 TIMER_H_DURATION = 64 * T1  # 32 seconds — max wait for ACK
+
+
+class TxnState(StrEnum):
+    PROCEEDING = "proceeding"
+    ACCEPTED = "accepted"
+    CONFIRMED = "confirmed"
+    TERMINATED = "terminated"
 
 
 class InviteServerTxn:
@@ -34,7 +42,7 @@ class InviteServerTxn:
         on_terminated: Callable[[str], None],
     ) -> None:
         self.branch = branch
-        self.state = "proceeding"
+        self.state = TxnState.PROCEEDING
         self._last_response: bytes | None = None
         self._response_addr: tuple[str, int] | None = None
         self._transport = transport
@@ -50,7 +58,7 @@ class InviteServerTxn:
         """Send 200 OK and enter Accepted state with retransmission timers."""
         self._last_response = response
         self._response_addr = addr
-        self.state = "accepted"
+        self.state = TxnState.ACCEPTED
         self._transport.sendto(response, addr)
         # Timer G: retransmit 2xx at T1, doubling to T2
         self._timer_g_interval = T1
@@ -67,7 +75,7 @@ class InviteServerTxn:
     def receive_retransmit(self) -> None:
         """Retransmitted INVITE received — re-send last response."""
         if (
-            self.state in ("accepted", "proceeding")
+            self.state in (TxnState.ACCEPTED, TxnState.PROCEEDING)
             and self._last_response
             and self._response_addr
         ):
@@ -78,9 +86,9 @@ class InviteServerTxn:
 
     def receive_ack(self) -> None:
         """ACK received — enter Confirmed state, absorb further ACKs."""
-        if self.state != "accepted":
+        if self.state != TxnState.ACCEPTED:
             return
-        self.state = "confirmed"
+        self.state = TxnState.CONFIRMED
         _cancel(self._timer_g)
         self._timer_g = None
         _cancel(self._timer_h)
@@ -91,13 +99,13 @@ class InviteServerTxn:
 
     def terminate(self) -> None:
         """Externally terminate (e.g. CANCEL or BYE received)."""
-        if self.state == "terminated":
+        if self.state == TxnState.TERMINATED:
             return
         self._do_terminate()
 
     def _fire_g(self) -> None:
         """Timer G: retransmit 200 OK, double interval (cap at T2)."""
-        if self.state != "accepted":
+        if self.state != TxnState.ACCEPTED:
             return
         if self._last_response is not None and self._response_addr is not None:
             self._transport.sendto(self._last_response, self._response_addr)
@@ -111,7 +119,7 @@ class InviteServerTxn:
 
     def _fire_h(self) -> None:
         """Timer H: ACK never arrived — transaction failed."""
-        if self.state != "accepted":
+        if self.state != TxnState.ACCEPTED:
             return
         logger.warning("INVITE txn %s: Timer H fired, ACK never received", self.branch)
         self._do_terminate()
@@ -119,13 +127,13 @@ class InviteServerTxn:
 
     def _fire_i(self) -> None:
         """Timer I: done absorbing ACK retransmissions."""
-        if self.state != "confirmed":
+        if self.state != TxnState.CONFIRMED:
             return
         logger.debug("INVITE txn %s: Timer I fired, cleaning up", self.branch)
         self._do_terminate()
 
     def _do_terminate(self) -> None:
-        self.state = "terminated"
+        self.state = TxnState.TERMINATED
         _cancel(self._timer_g)
         _cancel(self._timer_h)
         _cancel(self._timer_i)

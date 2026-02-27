@@ -21,8 +21,8 @@ E_PHRYGIAN_FREQS = [
 ]
 
 
-def linear_to_ulaw(sample: int) -> int:
-    """Convert a 16-bit signed PCM sample to 8-bit μ-law."""
+def _encode_ulaw(sample: int) -> int:
+    """Encode a single 16-bit signed PCM sample to 8-bit μ-law."""
     sign = 0
     if sample < 0:
         sign = 0x80
@@ -38,8 +38,26 @@ def linear_to_ulaw(sample: int) -> int:
         mask >>= 1
 
     mantissa = (sample >> (exponent + 3)) & 0x0F
-    byte = ~(sign | (exponent << 4) | mantissa) & 0xFF
-    return byte
+    return ~(sign | (exponent << 4) | mantissa) & 0xFF
+
+
+def _build_ulaw_table() -> bytes:
+    """Pre-compute μ-law encoding for all 65536 possible 16-bit samples."""
+    table = bytearray(65536)
+    for i in range(65536):
+        # Convert unsigned index to signed 16-bit
+        sample = i if i < 32768 else i - 65536
+        table[i] = _encode_ulaw(sample)
+    return bytes(table)
+
+
+_ULAW_TABLE: bytes = _build_ulaw_table()
+
+
+def linear_to_ulaw(sample: int) -> int:
+    """Convert a 16-bit signed PCM sample to 8-bit μ-law."""
+    sample = max(-32768, min(32767, sample))
+    return _ULAW_TABLE[sample & 0xFFFF]
 
 
 # ---------------------------------------------------------------------------
@@ -89,26 +107,18 @@ def _gen_kick(duration_s: float = 0.08) -> list[float]:
     return out
 
 
-def _gen_hihat(duration_s: float = 0.04) -> list[float]:
-    """Closed hi-hat — highpass noise + metallic tones, fast exp decay."""
+def _gen_hihat(duration_s: float = 0.04, decay: float = 8.0) -> list[float]:
+    """Hi-hat — highpass noise + metallic tones with exponential decay.
+
+    Closed: _gen_hihat() (short, fast decay).
+    Open:   _gen_hihat(duration_s=0.12, decay=3.0).
+    """
     n = int(SAMPLE_RATE * duration_s)
     noise = _highpass_noise(n)
     tones = _metallic_tones(n)
     out: list[float] = []
     for i in range(n):
-        env = math.exp(-8.0 * i / n)
-        out.append(env * (0.6 * noise[i] + 0.4 * tones[i]))
-    return out
-
-
-def _gen_open_hihat(duration_s: float = 0.12) -> list[float]:
-    """Open hi-hat — same character, slower decay."""
-    n = int(SAMPLE_RATE * duration_s)
-    noise = _highpass_noise(n)
-    tones = _metallic_tones(n)
-    out: list[float] = []
-    for i in range(n):
-        env = math.exp(-3.0 * i / n)
+        env = math.exp(-decay * i / n)
         out.append(env * (0.6 * noise[i] + 0.4 * tones[i]))
     return out
 
@@ -170,13 +180,6 @@ def _gen_reese_note(freq: float, duration_s: float) -> list[float]:
 # ---------------------------------------------------------------------------
 
 
-def _pad_f(samples: list[float], total: int) -> list[float]:
-    """Pad or truncate float sample list to exact length."""
-    if len(samples) >= total:
-        return samples[:total]
-    return samples + [0.0] * (total - len(samples))
-
-
 def _mix_into(dest: list[float], src: list[float], offset: int, gain: float) -> None:
     """Add src samples into dest at offset with gain."""
     for i, s in enumerate(src):
@@ -194,10 +197,11 @@ def _float_to_ulaw_buf(samples: list[float], peak: float = 0.95) -> bytes:
     scale = peak * 32767.0 / max_val
 
     buf = bytearray(len(samples))
+    table = _ULAW_TABLE
     for i, s in enumerate(samples):
         pcm = int(s * scale)
         pcm = max(-32768, min(32767, pcm))
-        buf[i] = linear_to_ulaw(pcm)
+        buf[i] = table[pcm & 0xFFFF]
     return bytes(buf)
 
 
@@ -284,7 +288,7 @@ def generate_rhythm(duration_s: float = 60.0) -> bytes:
     # Pre-render one-shot drum sounds (float PCM)
     kick = _gen_kick()
     hihat = _gen_hihat()
-    open_hat = _gen_open_hihat()
+    open_hat = _gen_hihat(duration_s=0.12, decay=3.0)
     snare = _gen_snare()
 
     # Build one measure of drums
@@ -308,8 +312,7 @@ def generate_rhythm(duration_s: float = 60.0) -> bytes:
     offset = 0
     while offset < total_samples:
         chunk = min(measure_samples, total_samples - offset)
-        for i in range(chunk):
-            drums[offset + i] = drum_measure[i]
+        drums[offset : offset + chunk] = drum_measure[:chunk]
         offset += measure_samples
 
     # Generate bass (4-measure phrases, tiled)
@@ -322,13 +325,10 @@ def generate_rhythm(duration_s: float = 60.0) -> bytes:
         if offset > 0:
             bass_phrase = _generate_bass_pattern(sixteenth_samples, num_measures=4)
         chunk = min(phrase_len, total_samples - offset)
-        for i in range(chunk):
-            bass[offset + i] = bass_phrase[i]
+        bass[offset : offset + chunk] = bass_phrase[:chunk]
         offset += phrase_len
 
     # Mix drums + bass
-    mixed: list[float] = [0.0] * total_samples
-    for i in range(total_samples):
-        mixed[i] = drums[i] + 0.7 * bass[i]
+    mixed = [d + 0.7 * b for d, b in zip(drums, bass, strict=True)]
 
     return _float_to_ulaw_buf(mixed)

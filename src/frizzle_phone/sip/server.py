@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import logging
 import random
 import socket
 import string
+from collections.abc import Callable
 
-from frizzle_phone.rtp.pcmu import generate_rhythm
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import SipMessage, build_response, parse_request
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 from frizzle_phone.sip.transaction import InviteServerTxn
 
 logger = logging.getLogger(__name__)
+
+_HandlerType = Callable[["SipMessage", tuple[str, int], tuple[str, int]], None]
 
 ALLOWED_METHODS = (
     "INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, REFER, SUBSCRIBE, NOTIFY"
@@ -106,12 +109,24 @@ def _generate_branch() -> str:
 class SipServer(asyncio.DatagramProtocol):
     """SIP server handling REGISTER, INVITE, ACK, BYE, and CANCEL."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, server_ip: str, audio_buf: bytes) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
         self._invite_txns: dict[str, InviteServerTxn] = {}
-        self._server_ip = get_server_ip()
-        self._audio_buf = generate_rhythm(60.0)
+        self._rtp_tasks: set[asyncio.Task[None]] = set()
+        self._server_ip = server_ip
+        self._audio_buf = audio_buf
+        self._handlers: dict[str, _HandlerType] = {
+            "REGISTER": self._handle_register,
+            "INVITE": self._handle_invite,
+            "ACK": self._handle_ack,
+            "BYE": self._handle_bye,
+            "CANCEL": self._handle_cancel,
+            "OPTIONS": self._handle_options,
+            "REFER": self._handle_refer,
+            "SUBSCRIBE": self._handle_subscribe,
+            "NOTIFY": self._handle_notify,
+        }
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self._transport = transport  # type: ignore[assignment]
@@ -162,17 +177,7 @@ class SipServer(asyncio.DatagramProtocol):
             self._invite_txns[branch].receive_retransmit()
             return
 
-        handler = {
-            "REGISTER": self._handle_register,
-            "INVITE": self._handle_invite,
-            "ACK": self._handle_ack,
-            "BYE": self._handle_bye,
-            "CANCEL": self._handle_cancel,
-            "OPTIONS": self._handle_options,
-            "REFER": self._handle_refer,
-            "SUBSCRIBE": self._handle_subscribe,
-            "NOTIFY": self._handle_notify,
-        }.get(msg.method)
+        handler = self._handlers.get(msg.method)
 
         if resp_addr != addr:
             logger.info(
@@ -194,6 +199,21 @@ class SipServer(asyncio.DatagramProtocol):
     def _send(self, data: bytes, addr: tuple[str, int]) -> None:
         if self._transport is not None:
             self._transport.sendto(data, addr)
+
+    def _terminate_call(self, call: Call) -> None:
+        """Mark a call as terminated and clean up its RTP stream and transaction."""
+        call.terminated = True
+        if call.rtp_stream is not None:
+            call.rtp_stream.stop()
+        if call.invite_branch:
+            txn = self._invite_txns.pop(call.invite_branch, None)
+            if txn is not None:
+                txn.terminate()
+
+    def _respond_200_ok(self, msg: SipMessage, resp_addr: tuple[str, int]) -> None:
+        """Send a simple 200 OK response with a generated to-tag."""
+        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
+        self._send(response, resp_addr)
 
     def _handle_register(
         self,
@@ -246,9 +266,7 @@ class SipServer(asyncio.DatagramProtocol):
         # Clean up existing call if re-INVITE (Bug 14)
         existing = self._calls.get(call_id)
         if existing is not None:
-            existing.terminated = True
-            if existing.rtp_stream is not None:
-                existing.rtp_stream.stop()
+            self._terminate_call(existing)
 
         call = Call(
             call_id=call_id,
@@ -321,12 +339,14 @@ class SipServer(asyncio.DatagramProtocol):
             loop=loop,
             remote_addr=call.remote_rtp_addr,
             audio_buf=self._audio_buf,
-            done_callback=done_future,
+            done_future=done_future,
             local_port=10000,
         )
         # Bug 13: use call_soon instead of direct callback to avoid reentrancy
         done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
-        asyncio.ensure_future(call.rtp_stream.start())
+        task = loop.create_task(call.rtp_stream.start())
+        self._rtp_tasks.add(task)
+        task.add_done_callback(self._rtp_tasks.discard)
 
     def _handle_bye(
         self,
@@ -337,15 +357,7 @@ class SipServer(asyncio.DatagramProtocol):
         call_id = msg.header("Call-ID") or ""
         call = self._calls.pop(call_id, None)
         if call is not None:
-            # Bug 15: set terminated before cleanup
-            call.terminated = True
-            if call.rtp_stream is not None:
-                call.rtp_stream.stop()
-            # Clean up INVITE transaction
-            if call.invite_branch:
-                txn = self._invite_txns.pop(call.invite_branch, None)
-                if txn is not None:
-                    txn.terminate()
+            self._terminate_call(call)
         tag = call.to_tag if call else _generate_tag()
         response = build_response(msg, 200, "OK", to_tag=tag)
         self._send(response, resp_addr)
@@ -369,14 +381,7 @@ class SipServer(asyncio.DatagramProtocol):
         ok = build_response(msg, 200, "OK")
         self._send(ok, resp_addr)
 
-        call.terminated = True
-        if call.rtp_stream is not None:
-            call.rtp_stream.stop()
-        # Terminate the INVITE transaction if active
-        if call.invite_branch:
-            txn = self._invite_txns.pop(call.invite_branch, None)
-            if txn is not None:
-                txn.terminate()
+        self._terminate_call(call)
         # 487 Request Terminated for the original INVITE
         if call.invite_request is not None:
             terminated = build_response(
@@ -410,8 +415,7 @@ class SipServer(asyncio.DatagramProtocol):
         resp_addr: tuple[str, int],
     ) -> None:
         """Accept REFER (Cisco phones send alarm/diagnostic data via REFER)."""
-        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
-        self._send(response, resp_addr)
+        self._respond_200_ok(msg, resp_addr)
 
     def _handle_subscribe(
         self,
@@ -420,8 +424,7 @@ class SipServer(asyncio.DatagramProtocol):
         resp_addr: tuple[str, int],
     ) -> None:
         """Accept SUBSCRIBE for MWI/presence."""
-        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
-        self._send(response, resp_addr)
+        self._respond_200_ok(msg, resp_addr)
 
     def _handle_notify(
         self,
@@ -430,18 +433,14 @@ class SipServer(asyncio.DatagramProtocol):
         resp_addr: tuple[str, int],
     ) -> None:
         """Accept NOTIFY."""
-        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
-        self._send(response, resp_addr)
+        self._respond_200_ok(msg, resp_addr)
 
     def _send_bye(self, call: Call) -> None:
         """Send a BYE to the remote phone after audio finishes."""
         # Bug 15: check terminated flag to prevent double-BYE
         if call.terminated:
             return
-        call.terminated = True
-
-        if call.rtp_stream is not None:
-            call.rtp_stream.stop()
+        self._terminate_call(call)
 
         call_id = call.call_id
         remote_addr = call.remote_addr
@@ -485,15 +484,20 @@ class SipServer(asyncio.DatagramProtocol):
             if call.rtp_stream is not None:
                 call.rtp_stream.stop()
         self._calls.clear()
+        for task in self._rtp_tasks:
+            task.cancel()
+        self._rtp_tasks.clear()
 
 
 async def start_server(
     host: str = "0.0.0.0",
     port: int = 5060,
+    *,
+    server_ip: str,
+    audio_buf: bytes,
 ) -> asyncio.DatagramTransport:
     loop = asyncio.get_running_loop()
-    transport, _ = await loop.create_datagram_endpoint(
-        SipServer, local_addr=(host, port)
-    )
+    factory = functools.partial(SipServer, server_ip=server_ip, audio_buf=audio_buf)
+    transport, _ = await loop.create_datagram_endpoint(factory, local_addr=(host, port))
     logger.info("Listening on %s:%d", host, port)
     return transport  # pyright: ignore[reportReturnType]

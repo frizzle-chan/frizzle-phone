@@ -38,13 +38,13 @@ class RtpStream:
         loop: asyncio.AbstractEventLoop,
         remote_addr: tuple[str, int],
         audio_buf: bytes,
-        done_callback: asyncio.Future[None] | None = None,
+        done_future: asyncio.Future[None] | None = None,
         local_port: int = 0,
     ):
         self._loop = loop
         self._remote_addr = remote_addr
         self._audio_buf = audio_buf
-        self._done_future = done_callback
+        self._done_future = done_future
         self._local_port = local_port
         self._transport: asyncio.DatagramTransport | None = None
         self._task: asyncio.Task[None] | None = None
@@ -68,18 +68,16 @@ class RtpStream:
         timestamp = self._initial_timestamp
         offset = 0
         buf_len = len(self._audio_buf)
-        first_packet = True
 
         next_send_time = time.monotonic()
 
         while offset + SAMPLES_PER_PACKET <= buf_len:
             payload = self._audio_buf[offset : offset + SAMPLES_PER_PACKET]
             packet = build_rtp_packet(
-                seq, timestamp, self._ssrc, payload, marker=first_packet
+                seq, timestamp, self._ssrc, payload, marker=(offset == 0)
             )
             if self._transport is not None:
                 self._transport.sendto(packet)
-            first_packet = False
             seq = (seq + 1) & 0xFFFF
             timestamp = (timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
             offset += SAMPLES_PER_PACKET

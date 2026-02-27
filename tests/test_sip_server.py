@@ -1,5 +1,8 @@
 """Tests for SIP server request handling."""
 
+import asyncio
+from typing import Any
+
 import pytest
 
 from frizzle_phone.sip.server import SipServer
@@ -21,27 +24,22 @@ def _make_invite(*, require: str | None = None, branch: str = "z9hG4bK001") -> b
     return "\r\n".join(lines).encode()
 
 
-class FakeTransport:
+class FakeTransport(asyncio.DatagramTransport):
     """Captures sendto() calls for test assertions."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.sent: list[tuple[bytes, tuple[str, int]]] = []
 
-    def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
-        self.sent.append((data, addr))
-
-    def close(self) -> None:
-        pass
+    def sendto(self, data: Any, addr: Any = None) -> None:
+        if addr is not None:
+            self.sent.append((bytes(data), addr))
 
 
 def _make_server() -> tuple[SipServer, FakeTransport]:
-    server = SipServer.__new__(SipServer)
-    server._calls = {}
-    server._invite_txns = {}
-    server._server_ip = "10.0.0.2"
-    server._audio_buf = b"\xff" * 160
+    server = SipServer(server_ip="10.0.0.2", audio_buf=b"\xff" * 160)
     transport = FakeTransport()
-    server._transport = transport
+    server.connection_made(transport)
     return server, transport
 
 
