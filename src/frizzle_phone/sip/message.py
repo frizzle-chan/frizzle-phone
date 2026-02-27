@@ -4,6 +4,17 @@ from __future__ import annotations
 
 import dataclasses
 
+# RFC 3261 §7.3.1 — compact header form abbreviations
+_COMPACT_HEADERS = {
+    "v": "Via",
+    "f": "From",
+    "t": "To",
+    "i": "Call-ID",
+    "m": "Contact",
+    "l": "Content-Length",
+    "c": "Content-Type",
+}
+
 
 @dataclasses.dataclass
 class SipMessage:
@@ -45,7 +56,9 @@ def parse_request(data: bytes) -> SipMessage:
     for line in lines[1:]:
         if ":" in line:
             key, _, value = line.partition(":")
-            headers.append((key.strip(), value.strip()))
+            key = key.strip()
+            key = _COMPACT_HEADERS.get(key, key)
+            headers.append((key, value.strip()))
 
     return SipMessage(
         method=method,

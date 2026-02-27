@@ -13,6 +13,7 @@ from frizzle_phone.rtp.pcmu import generate_rhythm
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import SipMessage, build_response, parse_request
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
+from frizzle_phone.sip.transaction import InviteServerTxn
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class Call:
     remote_rtp_addr: tuple[str, int]
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
+    invite_branch: str | None = None
     terminated: bool = False
 
 
@@ -78,6 +80,18 @@ def get_server_ip() -> str:
         return sock.getsockname()[0]
     finally:
         sock.close()
+
+
+def _extract_branch(msg: SipMessage) -> str | None:
+    """Extract the Via branch parameter for transaction matching."""
+    via = msg.header("Via")
+    if via is None:
+        return None
+    for param in via.split(";"):
+        param = param.strip()
+        if param.startswith("branch="):
+            return param[7:]
+    return None
 
 
 def _generate_tag() -> str:
@@ -95,6 +109,7 @@ class SipServer(asyncio.DatagramProtocol):
     def __init__(self) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
+        self._invite_txns: dict[str, InviteServerTxn] = {}
         self._server_ip = get_server_ip()
         self._audio_buf = generate_rhythm(60.0)
 
@@ -126,6 +141,26 @@ class SipServer(asyncio.DatagramProtocol):
 
         # RFC 3261 §18.2.2: send responses to Via address, not packet source
         resp_addr = _response_addr(msg, addr)
+
+        # RFC 3261 §8.2.2: reject requests with unsupported Require options
+        if msg.method not in ("ACK", "CANCEL"):
+            require = msg.header("Require")
+            if require:
+                response = build_response(
+                    msg,
+                    420,
+                    "Bad Extension",
+                    extra_headers=[("Unsupported", require)],
+                )
+                self._send(response, resp_addr)
+                return
+
+        # Retransmission detection: if an INVITE matches an existing transaction,
+        # re-send the cached response instead of re-processing (RFC 3261 §17.2.1)
+        branch = _extract_branch(msg)
+        if branch and msg.method == "INVITE" and branch in self._invite_txns:
+            self._invite_txns[branch].receive_retransmit()
+            return
 
         handler = {
             "REGISTER": self._handle_register,
@@ -240,7 +275,28 @@ class SipServer(asyncio.DatagramProtocol):
             to_tag=to_tag,
             extra_headers=[("Contact", f"<sip:frizzle@{self._server_ip}:5060>")],
         )
-        self._send(ok, resp_addr)
+
+        # Send 200 OK through transaction layer for Timer G retransmission
+        invite_branch = _extract_branch(msg)
+        if invite_branch and self._transport is not None:
+            # Clean up any previous txn for this branch
+            old_txn = self._invite_txns.pop(invite_branch, None)
+            if old_txn is not None:
+                old_txn.terminate()
+            txn = InviteServerTxn(
+                branch=invite_branch,
+                transport=self._transport,
+                loop=asyncio.get_running_loop(),
+                on_timeout=lambda: asyncio.get_running_loop().call_soon(
+                    self._send_bye, call
+                ),
+                on_terminated=self._remove_txn,
+            )
+            self._invite_txns[invite_branch] = txn
+            call.invite_branch = invite_branch
+            txn.send_2xx(ok, resp_addr)
+        else:
+            self._send(ok, resp_addr)
 
     def _handle_ack(
         self,
@@ -253,6 +309,10 @@ class SipServer(asyncio.DatagramProtocol):
         if call is None:
             logger.warning("ACK for unknown call: %s", call_id)
             return
+
+        # Notify INVITE transaction that ACK arrived (stops Timer G)
+        if call.invite_branch and call.invite_branch in self._invite_txns:
+            self._invite_txns[call.invite_branch].receive_ack()
 
         loop = asyncio.get_running_loop()
         done_future: asyncio.Future[None] = loop.create_future()
@@ -281,6 +341,11 @@ class SipServer(asyncio.DatagramProtocol):
             call.terminated = True
             if call.rtp_stream is not None:
                 call.rtp_stream.stop()
+            # Clean up INVITE transaction
+            if call.invite_branch:
+                txn = self._invite_txns.pop(call.invite_branch, None)
+                if txn is not None:
+                    txn.terminate()
         tag = call.to_tag if call else _generate_tag()
         response = build_response(msg, 200, "OK", to_tag=tag)
         self._send(response, resp_addr)
@@ -307,6 +372,11 @@ class SipServer(asyncio.DatagramProtocol):
         call.terminated = True
         if call.rtp_stream is not None:
             call.rtp_stream.stop()
+        # Terminate the INVITE transaction if active
+        if call.invite_branch:
+            txn = self._invite_txns.pop(call.invite_branch, None)
+            if txn is not None:
+                txn.terminate()
         # 487 Request Terminated for the original INVITE
         if call.invite_request is not None:
             terminated = build_response(
@@ -401,8 +471,15 @@ class SipServer(asyncio.DatagramProtocol):
         self._send(bye_msg, remote_addr)
         logger.info("Sent BYE for call %s", call_id)
 
+    def _remove_txn(self, branch: str) -> None:
+        """Callback for transaction cleanup after termination."""
+        self._invite_txns.pop(branch, None)
+
     def _cleanup_all_calls(self) -> None:
-        """Stop all active calls during shutdown (Bug 16)."""
+        """Stop all active calls and transactions during shutdown (Bug 16)."""
+        for txn in list(self._invite_txns.values()):
+            txn.terminate()
+        self._invite_txns.clear()
         for call in self._calls.values():
             call.terminated = True
             if call.rtp_stream is not None:

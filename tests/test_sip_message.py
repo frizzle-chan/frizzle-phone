@@ -133,6 +133,28 @@ def test_extra_headers():
     assert "Allow: INVITE, BYE" in text
 
 
+def test_compact_header_forms():
+    """Compact header abbreviations (RFC 3261 §7.3.1) are normalized."""
+    raw = (
+        b"INVITE sip:bob@example.com SIP/2.0\r\n"
+        b"v: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK123\r\n"
+        b"f: <sip:alice@example.com>;tag=abc\r\n"
+        b"t: <sip:bob@example.com>\r\n"
+        b"i: compact-test@10.0.0.1\r\n"
+        b"CSeq: 1 INVITE\r\n"
+        b"l: 0\r\n"
+        b"\r\n"
+    )
+    msg = parse_request(raw)
+    assert msg.header("Via") == "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK123"
+    from_val = msg.header("From")
+    assert from_val is not None
+    assert "alice" in from_val
+    assert msg.header("To") is not None
+    assert msg.header("Call-ID") == "compact-test@10.0.0.1"
+    assert msg.header("Content-Length") == "0"
+
+
 def test_content_length_byte_count():
     """Content-Length should be byte length, not character length."""
     msg = parse_request(_make_register())
