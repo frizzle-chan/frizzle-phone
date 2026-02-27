@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+CONTAINER=frizzle-phone-dev
+
+docker rm -f "$CONTAINER" 2>/dev/null || true
+
+docker build -t "$CONTAINER" --target production .
+
+ENV_ARGS=()
+[[ -f .env ]] && ENV_ARGS=(--env-file .env)
+
+docker run --rm --name "$CONTAINER" \
+    --network host \
+    "${ENV_ARGS[@]}" \
+    "$CONTAINER" \
+    2>&1 | tee frizzle-phone.log
