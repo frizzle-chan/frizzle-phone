@@ -35,6 +35,10 @@ Package manager: **uv** (not pip). Always use `uv run` to execute tools.
 5. `uv run pytest` - tests with coverage
 6. `uv run squawk migrations/*.sql` - SQL migration lint (skipped if no files)
 
+### Logs
+
+Application logs are written to `frizzle-phone.log` in the project root.
+
 ### Pre-commit Hooks (lefthook)
 
 Lefthook runs ruff, ty, vulture, squawk, and pytest on pre-commit. Direct commits to `master` are blocked by a branch guard.
