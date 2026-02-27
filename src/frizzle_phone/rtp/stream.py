@@ -39,11 +39,13 @@ class RtpStream:
         remote_addr: tuple[str, int],
         audio_buf: bytes,
         done_callback: asyncio.Future[None] | None = None,
+        local_port: int = 0,
     ):
         self._loop = loop
         self._remote_addr = remote_addr
         self._audio_buf = audio_buf
         self._done_future = done_callback
+        self._local_port = local_port
         self._transport: asyncio.DatagramTransport | None = None
         self._task: asyncio.Task[None] | None = None
         self._ssrc = random.randint(0, 0xFFFFFFFF)
@@ -51,8 +53,11 @@ class RtpStream:
         self._initial_timestamp = random.randint(0, 0xFFFFFFFF)
 
     async def start(self) -> None:
+        local_addr = ("0.0.0.0", self._local_port) if self._local_port else None
         transport, _ = await self._loop.create_datagram_endpoint(
-            asyncio.DatagramProtocol, remote_addr=self._remote_addr
+            asyncio.DatagramProtocol,
+            remote_addr=self._remote_addr,
+            local_addr=local_addr,
         )
         self._transport = transport  # pyright: ignore[reportAssignmentType]
         self._task = self._loop.create_task(self._send_loop())
