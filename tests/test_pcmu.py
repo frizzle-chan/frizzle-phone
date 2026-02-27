@@ -1,4 +1,4 @@
-from frizzle_phone.rtp.pcmu import SILENCE, generate_rhythm, linear_to_ulaw
+from frizzle_phone.rtp.pcmu import SILENCE, generate_rhythm, linear_to_ulaw, pcm_to_ulaw
 
 
 def test_ulaw_silence():
@@ -27,3 +27,20 @@ def test_rhythm_starts_with_tone():
     buf = generate_rhythm(1.0)
     # Early samples should contain tone (not all silence)
     assert any(b != SILENCE for b in buf[:20])
+
+
+def test_pcm_to_ulaw_length():
+    samples = [0.0, 0.5, -0.5, 1.0, -1.0]
+    result = pcm_to_ulaw(samples)
+    assert len(result) == len(samples)
+
+
+def test_pcm_to_ulaw_silence():
+    result = pcm_to_ulaw([0.0, 0.0, 0.0])
+    assert all(b == SILENCE for b in result)
+
+
+def test_pcm_to_ulaw_nonsilent():
+    result = pcm_to_ulaw([0.0, 0.8, -0.8])
+    assert result[1] != SILENCE
+    assert result[2] != SILENCE
