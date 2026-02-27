@@ -140,7 +140,7 @@ def _build_bye(
 @pytest_asyncio.fixture
 async def sip_endpoint():
     """Start a SipServer on an OS-assigned port with a 1-packet audio buffer."""
-    transport = await start_server(
+    transport, server = await start_server(
         "127.0.0.1",
         0,
         server_ip="127.0.0.1",
@@ -148,14 +148,14 @@ async def sip_endpoint():
         rtp_port=0,
     )
     _, port = transport.get_extra_info("sockname")
-    yield transport, port
+    yield transport, server, port
     transport.close()
 
 
 @pytest_asyncio.fixture
 async def sip_client(sip_endpoint):
     """UDP client connected to the test SIP server."""
-    transport, server_port = sip_endpoint
+    transport, _server, server_port = sip_endpoint
     loop = asyncio.get_running_loop()
     proto = _ClientProtocol()
     client_transport, _ = await loop.create_datagram_endpoint(
@@ -369,6 +369,64 @@ async def test_crlf_keepalive(sip_client):
     transport, queue, *_ = sip_client
     transport.sendto(b"\r\n\r\n")
     assert await _recv(queue) == b"\r\n"
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_sends_bye(sip_endpoint):
+    """Graceful shutdown sends BYE to all active calls."""
+    transport, server, server_port = sip_endpoint
+    loop = asyncio.get_running_loop()
+    proto = _ClientProtocol()
+    client_transport, _ = await loop.create_datagram_endpoint(
+        lambda: proto,
+        remote_addr=("127.0.0.1", server_port),
+    )
+    client_port = client_transport.get_extra_info("sockname")[1]
+
+    # Establish a call (INVITE → 100+200, no ACK so RTP doesn't auto-BYE)
+    client_transport.sendto(
+        _build_invite(
+            server_port, client_port, call_id="e2e-shutdown", branch="z9hG4bKsd1"
+        )
+    )
+    await _recv_responses(proto.queue, 2)  # 100 + 200
+
+    server.graceful_shutdown()
+
+    data = await _recv(proto.queue, timeout=2.0)
+    assert data.startswith(b"BYE ")
+
+    client_transport.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ack_ignored(sip_client):
+    """Duplicate ACK retransmissions must not start a second RTP stream."""
+    transport, queue, server_port, client_port = sip_client
+    cid = "e2e-dup-ack"
+
+    transport.sendto(
+        _build_invite(server_port, client_port, call_id=cid, branch="z9hG4bKda1")
+    )
+    await _recv_responses(queue, 2)  # 100 + 200
+
+    # First ACK — starts RTP, which will auto-send BYE when audio finishes
+    transport.sendto(
+        _build_ack(server_port, client_port, call_id=cid, branch="z9hG4bKda2")
+    )
+    # Duplicate ACK (retransmission) — must be absorbed
+    transport.sendto(
+        _build_ack(server_port, client_port, call_id=cid, branch="z9hG4bKda3")
+    )
+
+    # We should get exactly one BYE (from the auto-bye after audio finishes),
+    # not an error-triggered BYE from a port conflict.
+    data = await _recv(queue, timeout=3.0)
+    assert data.startswith(b"BYE ")
+
+    # No second BYE should arrive
+    with pytest.raises(TimeoutError):
+        await _recv(queue, timeout=0.5)
 
 
 @pytest.mark.asyncio

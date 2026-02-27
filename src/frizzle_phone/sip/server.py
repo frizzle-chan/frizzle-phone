@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import functools
 import logging
 import socket
 from collections.abc import Callable
@@ -101,6 +100,7 @@ class Call:
     to_tag: str
     remote_addr: tuple[str, int]
     remote_contact: str
+    remote_from: str
     remote_rtp_addr: tuple[str, int]
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
@@ -253,7 +253,7 @@ class SipServer(asyncio.DatagramProtocol):
 
     def _parse_invite_params(
         self, msg: SipMessage, addr: tuple[str, int]
-    ) -> tuple[str, str, tuple[str, int], str]:
+    ) -> tuple[str, str, tuple[str, int], str, str]:
         """Extract call parameters from an INVITE request.
 
         Returns (call_id, from_tag, remote_rtp_addr, remote_contact).
@@ -269,8 +269,17 @@ class SipServer(asyncio.DatagramProtocol):
             offer = parse_sdp_offer(msg.body)
             remote_rtp_addr = (offer.connection_address, offer.audio_port)
 
-        remote_contact = msg.header("Contact") or f"sip:{addr[0]}:{addr[1]}"
-        return call_id, from_tag, remote_rtp_addr, remote_contact
+        contact_header = msg.header("Contact") or f"<sip:{addr[0]}:{addr[1]}>"
+        # Extract URI from between angle brackets, ignoring Contact params
+        if "<" in contact_header and ">" in contact_header:
+            remote_contact = contact_header[
+                contact_header.index("<") + 1 : contact_header.index(">")
+            ]
+        else:
+            remote_contact = contact_header
+
+        remote_from = from_header.split(";tag=")[0].strip()
+        return call_id, from_tag, remote_rtp_addr, remote_contact, remote_from
 
     def _setup_invite_txn(
         self, call: Call, response: bytes, resp_addr: tuple[str, int], branch: str
@@ -297,8 +306,8 @@ class SipServer(asyncio.DatagramProtocol):
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
-        call_id, from_tag, remote_rtp_addr, remote_contact = self._parse_invite_params(
-            msg, addr
+        call_id, from_tag, remote_rtp_addr, remote_contact, remote_from = (
+            self._parse_invite_params(msg, addr)
         )
         to_tag = generate_tag()
 
@@ -311,8 +320,9 @@ class SipServer(asyncio.DatagramProtocol):
             call_id=call_id,
             from_tag=from_tag,
             to_tag=to_tag,
-            remote_addr=addr,
+            remote_addr=resp_addr,
             remote_contact=remote_contact,
+            remote_from=remote_from,
             remote_rtp_addr=remote_rtp_addr,
             invite_request=msg,
         )
@@ -356,7 +366,8 @@ class SipServer(asyncio.DatagramProtocol):
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
 
-        self._start_rtp_for_call(call)
+        if call.rtp_stream is None:
+            self._start_rtp_for_call(call)
 
     def _handle_bye(
         self,
@@ -467,12 +478,9 @@ class SipServer(asyncio.DatagramProtocol):
         remote_addr = call.remote_addr
         self._calls.pop(call_id, None)
 
-        # RFC 3261 §12.2.1.1: use remote target as Request-URI
-        request_uri = call.remote_contact.strip("<>")
-
         bye_msg = build_request(
             "BYE",
-            request_uri,
+            call.remote_contact,
             headers=[
                 (
                     "Via",
@@ -480,7 +488,7 @@ class SipServer(asyncio.DatagramProtocol):
                 ),
                 # RFC 3261 §12.2.1.1: reverse From/To for in-dialog requests
                 ("From", f"<sip:frizzle@{self._server_ip}>;tag={call.to_tag}"),
-                ("To", f"<sip:{remote_addr[0]}>;tag={call.from_tag}"),
+                ("To", f"{call.remote_from};tag={call.from_tag}"),
                 ("Call-ID", call_id),
                 ("CSeq", "1 BYE"),
                 ("Max-Forwards", "70"),
@@ -492,6 +500,15 @@ class SipServer(asyncio.DatagramProtocol):
     def _remove_txn(self, branch: str) -> None:
         """Callback for transaction cleanup after termination."""
         self._invite_txns.pop(branch, None)
+
+    def graceful_shutdown(self) -> None:
+        """Send BYE to all active calls before tearing down state.
+
+        Must be called while the transport is still open so the BYEs
+        can actually be sent on the wire.
+        """
+        for call in list(self._calls.values()):
+            self._send_bye(call)
 
     def _cleanup_all_calls(self) -> None:
         """Stop all active calls and transactions during shutdown."""
@@ -516,11 +533,12 @@ async def start_server(
     server_ip: str,
     audio_buf: bytes,
     rtp_port: int = 10000,
-) -> asyncio.DatagramTransport:
+) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    factory = functools.partial(
-        SipServer, server_ip=server_ip, audio_buf=audio_buf, rtp_port=rtp_port
+    server = SipServer(server_ip=server_ip, audio_buf=audio_buf, rtp_port=rtp_port)
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: server, local_addr=(host, port)
     )
-    transport, _ = await loop.create_datagram_endpoint(factory, local_addr=(host, port))
+    assert isinstance(transport, asyncio.DatagramTransport)
     logger.info("Listening on %s:%d", host, port)
-    return transport  # pyright: ignore[reportReturnType]
+    return transport, server
