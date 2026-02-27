@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import signal
 
 from frizzle_phone.rtp.pcmu import generate_rhythm
 from frizzle_phone.sip.server import get_server_ip, start_server
@@ -10,6 +11,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
@@ -19,8 +21,12 @@ async def main() -> None:
     transport = await start_server(
         "0.0.0.0", 5060, server_ip=server_ip, audio_buf=audio_buf
     )
+    shutdown = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown.set)
     try:
-        await asyncio.Event().wait()
+        await shutdown.wait()
+        logger.info("Shutting down...")
     finally:
         transport.close()
 
