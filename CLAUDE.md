@@ -13,6 +13,10 @@ Discord bot using discord.py with asyncpg/PostgreSQL for persistence.
 
 Package manager: **uv** (not pip). Always use `uv run` to execute tools.
 
+### Running the Server
+
+Always use `./dev` to launch the server (Docker-based, uses `--network host`).
+
 ### Common Commands (via justfile)
 
 - `just` - run all checks (lint, format, types, squawk, vulture)
@@ -48,3 +52,4 @@ Lefthook runs ruff, ty, vulture, squawk, and pytest on pre-commit. Direct commit
 - PR target branch: `main`
 - Repo does not allow merge commits (use squash merge)
 - GitHub Actions pins dependencies by SHA with version comments
+- SIP code (`src/frizzle_phone/sip/`) is annotated with RFC section references — when modifying SIP logic, cite the relevant RFC section (e.g. `# RFC 3261 §17.2.1: ...`). Use the `/rfc-sip-lookup` skill to find the correct sections.
