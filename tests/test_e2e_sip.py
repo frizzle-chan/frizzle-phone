@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 
 import pytest
 import pytest_asyncio
@@ -146,14 +145,11 @@ async def sip_endpoint():
         0,
         server_ip="127.0.0.1",
         audio_buf=b"\x7f" * 160,
+        rtp_port=0,
     )
     _, port = transport.get_extra_info("sockname")
     yield transport, port
     transport.close()
-    # Let pending RTP tasks (start + send_loop) finish before next test.
-    await asyncio.sleep(0.1)
-    # Break RtpStream↔Task reference cycles so __del__ closes the UDP socket.
-    gc.collect()
 
 
 @pytest_asyncio.fixture

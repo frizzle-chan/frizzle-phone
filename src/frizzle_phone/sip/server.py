@@ -109,13 +109,16 @@ def _generate_branch() -> str:
 class SipServer(asyncio.DatagramProtocol):
     """SIP server handling REGISTER, INVITE, ACK, BYE, and CANCEL."""
 
-    def __init__(self, *, server_ip: str, audio_buf: bytes) -> None:
+    def __init__(
+        self, *, server_ip: str, audio_buf: bytes, rtp_port: int = 10000
+    ) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
         self._invite_txns: dict[str, InviteServerTxn] = {}
         self._rtp_tasks: set[asyncio.Task[None]] = set()
         self._server_ip = server_ip
         self._audio_buf = audio_buf
+        self._rtp_port = rtp_port
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -284,7 +287,7 @@ class SipServer(asyncio.DatagramProtocol):
         self._send(trying, resp_addr)
 
         # 200 OK with SDP, to_tag, and Contact (Bug 1, 6)
-        sdp = build_sdp_answer(self._server_ip)
+        sdp = build_sdp_answer(self._server_ip, self._rtp_port)
         ok = build_response(
             msg,
             200,
@@ -340,7 +343,7 @@ class SipServer(asyncio.DatagramProtocol):
             remote_addr=call.remote_rtp_addr,
             audio_buf=self._audio_buf,
             done_future=done_future,
-            local_port=10000,
+            local_port=self._rtp_port,
         )
         # Bug 13: use call_soon instead of direct callback to avoid reentrancy
         done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
@@ -495,9 +498,12 @@ async def start_server(
     *,
     server_ip: str,
     audio_buf: bytes,
+    rtp_port: int = 10000,
 ) -> asyncio.DatagramTransport:
     loop = asyncio.get_running_loop()
-    factory = functools.partial(SipServer, server_ip=server_ip, audio_buf=audio_buf)
+    factory = functools.partial(
+        SipServer, server_ip=server_ip, audio_buf=audio_buf, rtp_port=rtp_port
+    )
     transport, _ = await loop.create_datagram_endpoint(factory, local_addr=(host, port))
     logger.info("Listening on %s:%d", host, port)
     return transport  # pyright: ignore[reportReturnType]
