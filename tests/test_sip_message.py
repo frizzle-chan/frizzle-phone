@@ -89,16 +89,16 @@ def test_multi_via_preserved():
     msg = parse_request(raw)
     vias = msg.header_values("Via")
     assert len(vias) == 2
-    assert "proxy.example.com" in vias[0]
-    assert "10.0.0.1" in vias[1]
+    assert vias[0] == "SIP/2.0/UDP proxy.example.com;branch=z9hG4bKaaa"
+    assert vias[1] == "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKbbb"
 
     # Response should mirror both Vias in order
     resp = build_response(msg, 200, "OK", to_tag="t1")
     text = resp.decode()
     via_lines = [line for line in text.split("\r\n") if line.startswith("Via:")]
     assert len(via_lines) == 2
-    assert "proxy.example.com" in via_lines[0]
-    assert "10.0.0.1" in via_lines[1]
+    assert via_lines[0] == "Via: SIP/2.0/UDP proxy.example.com;branch=z9hG4bKaaa"
+    assert via_lines[1] == "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKbbb"
 
 
 def test_to_tag_explicit():
