@@ -1,6 +1,10 @@
 *
 
-!README.md
-!uv.lock
 !pyproject.toml
-
+!uv.lock
+!main.py
+!src/
+!src/**
+!migrations/
+!migrations/**
+!README.md
