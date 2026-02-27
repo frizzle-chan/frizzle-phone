@@ -6,13 +6,19 @@ import asyncio
 import dataclasses
 import functools
 import logging
-import random
 import socket
-import string
 from collections.abc import Callable
 
 from frizzle_phone.rtp.stream import RtpStream
-from frizzle_phone.sip.message import SipMessage, build_response, parse_request
+from frizzle_phone.sip.message import (
+    SipMessage,
+    build_request,
+    build_response,
+    extract_branch,
+    generate_branch,
+    generate_tag,
+    parse_request,
+)
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 from frizzle_phone.sip.transaction import InviteServerTxn
 
@@ -25,23 +31,30 @@ ALLOWED_METHODS = (
 )
 
 
-def _response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str, int]:
-    """Determine response address per RFC 3261 §18.2.2 + RFC 3581 received/rport.
+def _add_via_received_params(msg: SipMessage, addr: tuple[str, int]) -> None:
+    """Add received/rport Via params per RFC 3581.
 
-    Adds received and rport Via params so the phone knows its observed address,
-    then routes the response to the Via sent-by address (which Cisco phones set
-    to their SIP listening port, typically 5060).
+    Mutates ``msg.headers`` in-place, tagging the top Via with the
+    observed source IP and port.
     """
     for i, (key, value) in enumerate(msg.headers):
         if key.lower() == "via":
             msg.headers[i] = (key, f"{value};received={addr[0]};rport={addr[1]}")
-            via_value = value
-            break
-    else:
+            return
+
+
+def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str, int]:
+    """Determine response address per RFC 3261 §18.2.2.
+
+    Routes the response to the Via sent-by address (which Cisco phones set
+    to their SIP listening port, typically 5060).
+    """
+    via = msg.header("Via")
+    if via is None:
         return addr
 
     # Parse sent-by from Via: "SIP/2.0/UDP host:port;params"
-    params = via_value.split(";")
+    params = via.split(";")
     sent_by = params[0].strip()
     parts = sent_by.split(None, 1)
     if len(parts) < 2:
@@ -83,27 +96,6 @@ def get_server_ip() -> str:
         return sock.getsockname()[0]
     finally:
         sock.close()
-
-
-def _extract_branch(msg: SipMessage) -> str | None:
-    """Extract the Via branch parameter for transaction matching."""
-    via = msg.header("Via")
-    if via is None:
-        return None
-    for param in via.split(";"):
-        param = param.strip()
-        if param.startswith("branch="):
-            return param[7:]
-    return None
-
-
-def _generate_tag() -> str:
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-
-
-def _generate_branch() -> str:
-    chars = string.ascii_lowercase + string.digits
-    return "z9hG4bK" + "".join(random.choices(chars, k=8))
 
 
 class SipServer(asyncio.DatagramProtocol):
@@ -157,8 +149,10 @@ class SipServer(asyncio.DatagramProtocol):
 
         logger.info("Received %s from %s", msg.method, addr)
 
+        # RFC 3581: tag Via with observed source address
+        _add_via_received_params(msg, addr)
         # RFC 3261 §18.2.2: send responses to Via address, not packet source
-        resp_addr = _response_addr(msg, addr)
+        resp_addr = _compute_response_addr(msg, addr)
 
         # RFC 3261 §8.2.2: reject requests with unsupported Require options
         if msg.method not in ("ACK", "CANCEL"):
@@ -175,7 +169,7 @@ class SipServer(asyncio.DatagramProtocol):
 
         # Retransmission detection: if an INVITE matches an existing transaction,
         # re-send the cached response instead of re-processing (RFC 3261 §17.2.1)
-        branch = _extract_branch(msg)
+        branch = extract_branch(msg)
         if branch and msg.method == "INVITE" and branch in self._invite_txns:
             self._invite_txns[branch].receive_retransmit()
             return
@@ -215,7 +209,7 @@ class SipServer(asyncio.DatagramProtocol):
 
     def _respond_200_ok(self, msg: SipMessage, resp_addr: tuple[str, int]) -> None:
         """Send a simple 200 OK response with a generated to-tag."""
-        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
+        response = build_response(msg, 200, "OK", to_tag=generate_tag())
         self._send(response, resp_addr)
 
     def _handle_register(
@@ -236,7 +230,7 @@ class SipServer(asyncio.DatagramProtocol):
             msg,
             200,
             "OK",
-            to_tag=_generate_tag(),
+            to_tag=generate_tag(),
             extra_headers=extra,
         )
         logger.debug("REGISTER response:\n%s", response.decode())
@@ -264,7 +258,7 @@ class SipServer(asyncio.DatagramProtocol):
         remote_contact = msg.header("Contact") or f"sip:{addr[0]}:{addr[1]}"
 
         # Generate to_tag once per dialog (Bug 1)
-        to_tag = _generate_tag()
+        to_tag = generate_tag()
 
         # Clean up existing call if re-INVITE (Bug 14)
         existing = self._calls.get(call_id)
@@ -298,7 +292,7 @@ class SipServer(asyncio.DatagramProtocol):
         )
 
         # Send 200 OK through transaction layer for Timer G retransmission
-        invite_branch = _extract_branch(msg)
+        invite_branch = extract_branch(msg)
         if invite_branch and self._transport is not None:
             # Clean up any previous txn for this branch
             old_txn = self._invite_txns.pop(invite_branch, None)
@@ -335,21 +329,7 @@ class SipServer(asyncio.DatagramProtocol):
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
 
-        loop = asyncio.get_running_loop()
-        done_future: asyncio.Future[None] = loop.create_future()
-        # Bug 2: use parsed remote RTP address instead of hardcoded port
-        call.rtp_stream = RtpStream(
-            loop=loop,
-            remote_addr=call.remote_rtp_addr,
-            audio_buf=self._audio_buf,
-            done_future=done_future,
-            local_port=self._rtp_port,
-        )
-        # Bug 13: use call_soon instead of direct callback to avoid reentrancy
-        done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
-        task = loop.create_task(call.rtp_stream.start())
-        self._rtp_tasks.add(task)
-        task.add_done_callback(self._rtp_tasks.discard)
+        self._start_rtp_for_call(call)
 
     def _handle_bye(
         self,
@@ -361,7 +341,7 @@ class SipServer(asyncio.DatagramProtocol):
         call = self._calls.pop(call_id, None)
         if call is not None:
             self._terminate_call(call)
-        tag = call.to_tag if call else _generate_tag()
+        tag = call.to_tag if call else generate_tag()
         response = build_response(msg, 200, "OK", to_tag=tag)
         self._send(response, resp_addr)
 
@@ -406,7 +386,7 @@ class SipServer(asyncio.DatagramProtocol):
             msg,
             200,
             "OK",
-            to_tag=_generate_tag(),
+            to_tag=generate_tag(),
             extra_headers=[("Allow", ALLOWED_METHODS)],
         )
         self._send(response, resp_addr)
@@ -438,6 +418,22 @@ class SipServer(asyncio.DatagramProtocol):
         """Accept NOTIFY."""
         self._respond_200_ok(msg, resp_addr)
 
+    def _start_rtp_for_call(self, call: Call) -> None:
+        """Create an RTP stream for the call and schedule BYE on completion."""
+        loop = asyncio.get_running_loop()
+        done_future: asyncio.Future[None] = loop.create_future()
+        call.rtp_stream = RtpStream(
+            loop=loop,
+            remote_addr=call.remote_rtp_addr,
+            audio_buf=self._audio_buf,
+            done_future=done_future,
+            local_port=self._rtp_port,
+        )
+        done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
+        task = loop.create_task(call.rtp_stream.start())
+        self._rtp_tasks.add(task)
+        task.add_done_callback(self._rtp_tasks.discard)
+
     def _send_bye(self, call: Call) -> None:
         """Send a BYE to the remote phone after audio finishes."""
         # Bug 15: check terminated flag to prevent double-BYE
@@ -449,27 +445,25 @@ class SipServer(asyncio.DatagramProtocol):
         remote_addr = call.remote_addr
         self._calls.pop(call_id, None)
 
-        via_branch = _generate_branch()
-        # Bug 12: use remote_contact as Request-URI
-        request_uri = call.remote_contact
-        # Strip angle brackets if present
-        if request_uri.startswith("<") and request_uri.endswith(">"):
-            request_uri = request_uri[1:-1]
+        # Bug 12: use remote_contact as Request-URI, strip angle brackets
+        request_uri = call.remote_contact.strip("<>")
 
-        lines = [
-            f"BYE {request_uri} SIP/2.0",
-            f"Via: SIP/2.0/UDP {self._server_ip}:5060;branch={via_branch}",
-            # Bug 3: From uses our to_tag, To uses their from_tag
-            f"From: <sip:frizzle@{self._server_ip}>;tag={call.to_tag}",
-            f"To: <sip:{remote_addr[0]}>;tag={call.from_tag}",
-            f"Call-ID: {call_id}",
-            "CSeq: 1 BYE",
-            "Max-Forwards: 70",
-            "Content-Length: 0",
-            "",
-            "",
-        ]
-        bye_msg = "\r\n".join(lines).encode("utf-8")
+        bye_msg = build_request(
+            "BYE",
+            request_uri,
+            headers=[
+                (
+                    "Via",
+                    f"SIP/2.0/UDP {self._server_ip}:5060;branch={generate_branch()}",
+                ),
+                # Bug 3: From uses our to_tag, To uses their from_tag
+                ("From", f"<sip:frizzle@{self._server_ip}>;tag={call.to_tag}"),
+                ("To", f"<sip:{remote_addr[0]}>;tag={call.from_tag}"),
+                ("Call-ID", call_id),
+                ("CSeq", "1 BYE"),
+                ("Max-Forwards", "70"),
+            ],
+        )
         self._send(bye_msg, remote_addr)
         logger.info("Sent BYE for call %s", call_id)
 

@@ -173,10 +173,3 @@ def extract_branch(msg: SipMessage) -> str | None:
         if param.startswith("branch="):
             return param[7:]
     return None
-
-
-def extract_tag(header_value: str) -> str:
-    """Extract the tag parameter from a SIP From/To header value."""
-    if ";tag=" in header_value:
-        return header_value.split(";tag=")[1].split(";")[0]
-    return ""
