@@ -69,6 +69,19 @@ def parse_request(data: bytes) -> SipMessage:
     )
 
 
+def _encode_message(lines: list[str], body: str, content_type: str) -> bytes:
+    """Encode header lines + body into a complete SIP message."""
+    body_bytes = body.encode("utf-8") if body else b""
+    if body_bytes:
+        lines.append(f"Content-Type: {content_type}")
+    lines.append(f"Content-Length: {len(body_bytes)}")
+    lines.append("")
+    msg_bytes = ("\r\n".join(lines) + "\r\n").encode("utf-8")
+    if body_bytes:
+        msg_bytes += body_bytes
+    return msg_bytes
+
+
 def build_response(
     request: SipMessage,
     status_code: int,
@@ -77,6 +90,7 @@ def build_response(
     *,
     to_tag: str | None = None,
     extra_headers: list[tuple[str, str]] | None = None,
+    content_type: str = "application/sdp",
 ) -> bytes:
     """Build a SIP response mirroring key headers from the request."""
     lines = [f"SIP/2.0 {status_code} {reason}"]
@@ -104,15 +118,27 @@ def build_response(
         for hdr_name, hdr_value in extra_headers:
             lines.append(f"{hdr_name}: {hdr_value}")
 
-    # Content-Length uses byte count (Bug 4)
-    body_bytes = body.encode("utf-8") if body else b""
-    if body:
-        lines.append("Content-Type: application/sdp")
-    lines.append(f"Content-Length: {len(body_bytes)}")
+    return _encode_message(lines, body, content_type)
 
-    lines.append("")
-    response_bytes = ("\r\n".join(lines) + "\r\n").encode("utf-8")
-    if body_bytes:
-        response_bytes += body_bytes
 
-    return response_bytes
+def build_request(
+    method: str,
+    uri: str,
+    *,
+    headers: list[tuple[str, str]],
+    body: str = "",
+    content_type: str = "application/sdp",
+) -> bytes:
+    """Build a SIP request message.
+
+    Parameters:
+        method: SIP method (e.g. "BYE", "INVITE")
+        uri: Request-URI
+        headers: List of (name, value) header tuples
+        body: Optional message body
+        content_type: Content-Type when body is present
+    """
+    lines = [f"{method} {uri} SIP/2.0"]
+    for name, value in headers:
+        lines.append(f"{name}: {value}")
+    return _encode_message(lines, body, content_type)

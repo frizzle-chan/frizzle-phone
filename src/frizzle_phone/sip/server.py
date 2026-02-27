@@ -12,7 +12,12 @@ import string
 from collections.abc import Callable
 
 from frizzle_phone.rtp.stream import RtpStream
-from frizzle_phone.sip.message import SipMessage, build_response, parse_request
+from frizzle_phone.sip.message import (
+    SipMessage,
+    build_request,
+    build_response,
+    parse_request,
+)
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 from frizzle_phone.sip.transaction import InviteServerTxn
 
@@ -456,33 +461,32 @@ class SipServer(asyncio.DatagramProtocol):
             return
         self._terminate_call(call)
 
-        call_id = call.call_id
-        remote_addr = call.remote_addr
-        self._calls.pop(call_id, None)
+        self._calls.pop(call.call_id, None)
 
-        via_branch = _generate_branch()
         # Bug 12: use remote_contact as Request-URI
         request_uri = call.remote_contact
-        # Strip angle brackets if present
         if request_uri.startswith("<") and request_uri.endswith(">"):
             request_uri = request_uri[1:-1]
 
-        lines = [
-            f"BYE {request_uri} SIP/2.0",
-            f"Via: SIP/2.0/UDP {self._server_ip}:5060;branch={via_branch}",
-            # Bug 3: From uses our to_tag, To uses their from_tag
-            f"From: <sip:frizzle@{self._server_ip}>;tag={call.to_tag}",
-            f"To: <sip:{remote_addr[0]}>;tag={call.from_tag}",
-            f"Call-ID: {call_id}",
-            "CSeq: 1 BYE",
-            "Max-Forwards: 70",
-            "Content-Length: 0",
-            "",
-            "",
-        ]
-        bye_msg = "\r\n".join(lines).encode("utf-8")
-        self._send(bye_msg, remote_addr)
-        logger.info("Sent BYE for call %s", call_id)
+        ip = self._server_ip
+        bye_msg = build_request(
+            "BYE",
+            request_uri,
+            headers=[
+                ("Via", f"SIP/2.0/UDP {ip}:5060;branch={_generate_branch()}"),
+                # Bug 3: From uses our to_tag, To uses their from_tag
+                (
+                    "From",
+                    f"<sip:frizzle@{ip}>;tag={call.to_tag}",
+                ),
+                ("To", f"<sip:{call.remote_addr[0]}>;tag={call.from_tag}"),
+                ("Call-ID", call.call_id),
+                ("CSeq", "1 BYE"),
+                ("Max-Forwards", "70"),
+            ],
+        )
+        self._send(bye_msg, call.remote_addr)
+        logger.info("Sent BYE for call %s", call.call_id)
 
     def _remove_txn(self, branch: str) -> None:
         """Callback for transaction cleanup after termination."""

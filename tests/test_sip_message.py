@@ -1,4 +1,4 @@
-from frizzle_phone.sip.message import build_response, parse_request
+from frizzle_phone.sip.message import build_request, build_response, parse_request
 
 
 def _make_register() -> bytes:
@@ -165,3 +165,85 @@ def test_content_length_byte_count():
     byte_len = len(body.encode("utf-8"))
     assert byte_len != len(body)  # sanity check: byte len differs from char len
     assert f"Content-Length: {byte_len}" in text
+
+
+def test_build_response_custom_content_type():
+    """content_type parameter overrides the default application/sdp."""
+    msg = parse_request(_make_register())
+    resp = build_response(
+        msg, 200, "OK", body="hello", to_tag="t1", content_type="text/plain"
+    )
+    text = resp.decode()
+    assert "Content-Type: text/plain" in text
+    assert "application/sdp" not in text
+
+
+# --- build_request tests ---
+
+
+def test_build_request_basic():
+    """build_request produces a valid SIP request line and headers."""
+    data = build_request(
+        "BYE",
+        "sip:alice@10.0.0.1",
+        headers=[
+            ("Via", "SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK001"),
+            ("From", "<sip:bob@10.0.0.2>;tag=aaa"),
+            ("To", "<sip:alice@10.0.0.1>;tag=bbb"),
+            ("Call-ID", "test-call-001"),
+            ("CSeq", "1 BYE"),
+            ("Max-Forwards", "70"),
+        ],
+    )
+    text = data.decode()
+    assert text.startswith("BYE sip:alice@10.0.0.1 SIP/2.0\r\n")
+    assert "Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK001" in text
+    assert "Call-ID: test-call-001" in text
+    assert "Content-Length: 0" in text
+
+
+def test_build_request_with_body():
+    """build_request includes Content-Type and correct Content-Length for body."""
+    body = "v=0\r\no=test\r\n"
+    data = build_request(
+        "INVITE",
+        "sip:bob@10.0.0.1",
+        headers=[
+            ("Via", "SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK002"),
+            ("Call-ID", "invite-001"),
+            ("CSeq", "1 INVITE"),
+        ],
+        body=body,
+    )
+    text = data.decode()
+    assert text.startswith("INVITE sip:bob@10.0.0.1 SIP/2.0\r\n")
+    assert "Content-Type: application/sdp" in text
+    body_bytes = body.encode("utf-8")
+    assert f"Content-Length: {len(body_bytes)}" in text
+    assert text.endswith(body)
+
+
+def test_build_request_custom_content_type():
+    """build_request respects custom content_type."""
+    data = build_request(
+        "MESSAGE",
+        "sip:bob@10.0.0.1",
+        headers=[("CSeq", "1 MESSAGE")],
+        body="hello",
+        content_type="text/plain",
+    )
+    text = data.decode()
+    assert "Content-Type: text/plain" in text
+    assert "application/sdp" not in text
+
+
+def test_build_request_no_body():
+    """build_request with no body omits Content-Type."""
+    data = build_request(
+        "BYE",
+        "sip:alice@10.0.0.1",
+        headers=[("CSeq", "1 BYE")],
+    )
+    text = data.decode()
+    assert "Content-Type" not in text
+    assert "Content-Length: 0" in text
