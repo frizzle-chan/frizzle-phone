@@ -37,8 +37,8 @@ class SipMessage:
         return None
 
 
-def parse_request(data: bytes) -> SipMessage:
-    """Parse a SIP request from raw bytes."""
+def parse_message(data: bytes) -> SipMessage:
+    """Parse a SIP message (request or response) from raw bytes."""
     text = data.decode("utf-8", errors="replace")
     head, _, body = text.partition("\r\n\r\n")
     lines = head.split("\r\n")
@@ -158,13 +158,26 @@ def generate_branch() -> str:
     return "z9hG4bK" + "".join(random.choices(_TAG_CHARS, k=8))
 
 
+def parse_via_params(via: str) -> dict[str, str]:
+    """Parse Via header semicolon-delimited parameters into a dict.
+
+    Parameters without values (e.g. bare ``rport``) get empty string values.
+    The first segment (protocol/sent-by) is excluded.
+    """
+    params: dict[str, str] = {}
+    for part in via.split(";")[1:]:
+        part = part.strip()
+        if "=" in part:
+            key, _, value = part.partition("=")
+            params[key.strip()] = value.strip()
+        else:
+            params[part] = ""
+    return params
+
+
 def extract_branch(msg: SipMessage) -> str | None:
     """Extract the Via branch parameter for transaction matching."""
     via = msg.header("Via")
     if via is None:
         return None
-    for param in via.split(";"):
-        param = param.strip()
-        if param.startswith("branch="):
-            return param[7:]
-    return None
+    return parse_via_params(via).get("branch")

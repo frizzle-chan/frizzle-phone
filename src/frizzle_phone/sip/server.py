@@ -17,7 +17,8 @@ from frizzle_phone.sip.message import (
     extract_branch,
     generate_branch,
     generate_tag,
-    parse_request,
+    parse_message,
+    parse_via_params,
 )
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 from frizzle_phone.sip.transaction import InviteServerTxn, TxnState
@@ -40,8 +41,8 @@ def _add_via_received_params(msg: SipMessage, addr: tuple[str, int]) -> None:
     """
     for i, (key, value) in enumerate(msg.headers):
         if key.lower() == "via":
-            # RFC 3581 §4: only fill rport when the client included it
-            client_rport = ";rport" in value
+            params = parse_via_params(value)
+            client_rport = "rport" in params
             if client_rport:
                 # Strip the empty rport param; we add it back with the value
                 parts = value.split(";")
@@ -64,19 +65,18 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
     if via is None:
         return addr
 
-    params = via.split(";")
+    params = parse_via_params(via)
 
     # RFC 3581 §4: if rport is present with a value, use it
-    for param in params[1:]:
-        kv = param.strip().split("=", 1)
-        if kv[0].strip() == "rport" and len(kv) == 2:
-            try:
-                return (addr[0], int(kv[1].strip()))
-            except ValueError:
-                pass
+    rport = params.get("rport")
+    if rport:
+        try:
+            return (addr[0], int(rport))
+        except ValueError:
+            pass
 
     # Fallback: Via sent-by per RFC 3261 §18.2.2
-    sent_by = params[0].strip()
+    sent_by = via.split(";")[0].strip()
     parts = sent_by.split(None, 1)
     if len(parts) < 2:
         return addr
@@ -162,7 +162,7 @@ class SipServer(asyncio.DatagramProtocol):
 
         logger.debug("Raw from %s:\n%s", addr, data.decode("utf-8", errors="replace"))
         try:
-            msg = parse_request(data)
+            msg = parse_message(data)
         except Exception:
             logger.exception("Failed to parse SIP message from %s", addr)
             return
@@ -227,11 +227,6 @@ class SipServer(asyncio.DatagramProtocol):
             if txn is not None:
                 txn.terminate()
 
-    def _respond_200_ok(self, msg: SipMessage, resp_addr: tuple[str, int]) -> None:
-        """Send a simple 200 OK response with a generated to-tag."""
-        response = build_response(msg, 200, "OK", to_tag=generate_tag())
-        self._send(response, resp_addr)
-
     def _handle_register(
         self,
         msg: SipMessage,
@@ -256,28 +251,55 @@ class SipServer(asyncio.DatagramProtocol):
         logger.debug("REGISTER response:\n%s", response.decode())
         self._send(response, resp_addr)
 
-    def _handle_invite(
-        self,
-        msg: SipMessage,
-        addr: tuple[str, int],
-        resp_addr: tuple[str, int],
-    ) -> None:
+    def _parse_invite_params(
+        self, msg: SipMessage, addr: tuple[str, int]
+    ) -> tuple[str, str, tuple[str, int], str]:
+        """Extract call parameters from an INVITE request.
+
+        Returns (call_id, from_tag, remote_rtp_addr, remote_contact).
+        """
         call_id = msg.header("Call-ID") or ""
         from_header = msg.header("From") or ""
         from_tag = ""
         if ";tag=" in from_header:
             from_tag = from_header.split(";tag=")[1].split(";")[0]
 
-        # Parse SDP offer for remote RTP address
         remote_rtp_addr = (addr[0], 0)
         if msg.body:
             offer = parse_sdp_offer(msg.body)
             remote_rtp_addr = (offer.connection_address, offer.audio_port)
 
-        # Extract Contact for dialog routing (RFC 3261 §12.1.1)
         remote_contact = msg.header("Contact") or f"sip:{addr[0]}:{addr[1]}"
+        return call_id, from_tag, remote_rtp_addr, remote_contact
 
-        # Generate to_tag once per dialog (RFC 3261 §12.1.1)
+    def _setup_invite_txn(
+        self, call: Call, response: bytes, resp_addr: tuple[str, int], branch: str
+    ) -> None:
+        """Create an INVITE server transaction and send the 200 OK."""
+        old_txn = self._invite_txns.pop(branch, None)
+        if old_txn is not None:
+            old_txn.terminate()
+        loop = asyncio.get_running_loop()
+        txn = InviteServerTxn(
+            branch=branch,
+            transport=self._transport,  # type: ignore[arg-type]
+            loop=loop,
+            on_timeout=lambda: loop.call_soon(self._send_bye, call),
+            on_terminated=self._remove_txn,
+        )
+        self._invite_txns[branch] = txn
+        call.invite_branch = branch
+        txn.send_2xx(response, resp_addr)
+
+    def _handle_invite(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
+        call_id, from_tag, remote_rtp_addr, remote_contact = self._parse_invite_params(
+            msg, addr
+        )
         to_tag = generate_tag()
 
         # Clean up existing call if re-INVITE
@@ -297,16 +319,14 @@ class SipServer(asyncio.DatagramProtocol):
         self._calls[call_id] = call
 
         # 100 Trying — no to_tag (RFC 3261 §8.2.6.1)
-        trying = build_response(msg, 100, "Trying")
-        self._send(trying, resp_addr)
+        self._send(build_response(msg, 100, "Trying"), resp_addr)
 
         # 200 OK with SDP, to_tag, and Contact
-        sdp = build_sdp_answer(self._server_ip, self._rtp_port)
         ok = build_response(
             msg,
             200,
             "OK",
-            body=sdp,
+            body=build_sdp_answer(self._server_ip, self._rtp_port),
             to_tag=to_tag,
             extra_headers=[
                 ("Contact", f"<sip:frizzle@{self._server_ip}:5060>"),
@@ -314,25 +334,9 @@ class SipServer(asyncio.DatagramProtocol):
             ],
         )
 
-        # Send 200 OK through transaction layer for Timer G retransmission
         invite_branch = extract_branch(msg)
         if invite_branch and self._transport is not None:
-            # Clean up any previous txn for this branch
-            old_txn = self._invite_txns.pop(invite_branch, None)
-            if old_txn is not None:
-                old_txn.terminate()
-            txn = InviteServerTxn(
-                branch=invite_branch,
-                transport=self._transport,
-                loop=asyncio.get_running_loop(),
-                on_timeout=lambda: asyncio.get_running_loop().call_soon(
-                    self._send_bye, call
-                ),
-                on_terminated=self._remove_txn,
-            )
-            self._invite_txns[invite_branch] = txn
-            call.invite_branch = invite_branch
-            txn.send_2xx(ok, resp_addr)
+            self._setup_invite_txn(call, ok, resp_addr, invite_branch)
         else:
             self._send(ok, resp_addr)
 
@@ -400,8 +404,8 @@ class SipServer(asyncio.DatagramProtocol):
         ok = build_response(msg, 200, "OK", to_tag=call.to_tag)
         self._send(ok, resp_addr)
 
-        self._terminate_call(call)
-        # 487 Request Terminated for the original INVITE
+        # 487 Request Terminated for the original INVITE (before terminating
+        # the transaction so retransmission state is still alive)
         if call.invite_request is not None:
             terminated = build_response(
                 call.invite_request,
@@ -410,6 +414,7 @@ class SipServer(asyncio.DatagramProtocol):
                 to_tag=call.to_tag,
             )
             self._send(terminated, resp_addr)
+        self._terminate_call(call)
 
     def _handle_options(
         self,
@@ -434,7 +439,8 @@ class SipServer(asyncio.DatagramProtocol):
         resp_addr: tuple[str, int],
     ) -> None:
         """Accept REFER/SUBSCRIBE/NOTIFY with a simple 200 OK."""
-        self._respond_200_ok(msg, resp_addr)
+        response = build_response(msg, 200, "OK", to_tag=generate_tag())
+        self._send(response, resp_addr)
 
     def _start_rtp_for_call(self, call: Call) -> None:
         """Create an RTP stream for the call and schedule BYE on completion."""

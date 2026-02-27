@@ -1,4 +1,4 @@
-from frizzle_phone.sip.message import build_request, build_response, parse_request
+from frizzle_phone.sip.message import build_request, build_response, parse_message
 
 
 def _make_register() -> bytes:
@@ -31,7 +31,7 @@ def _make_invite_with_sdp() -> bytes:
 
 
 def test_parse_register():
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     assert msg.method == "REGISTER"
     assert msg.uri == "sip:example.com"
     assert msg.header("Call-ID") == "reg-001@10.0.0.1"
@@ -39,14 +39,14 @@ def test_parse_register():
 
 
 def test_parse_invite_with_sdp():
-    msg = parse_request(_make_invite_with_sdp())
+    msg = parse_message(_make_invite_with_sdp())
     assert msg.method == "INVITE"
     assert msg.body != ""
     assert "v=0" in msg.body
 
 
 def test_build_200_ok():
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     response = build_response(msg, 200, "OK", to_tag="testtag")
     text = response.decode()
     assert text.startswith("SIP/2.0 200 OK\r\n")
@@ -56,7 +56,7 @@ def test_build_200_ok():
 
 
 def test_build_response_with_body():
-    msg = parse_request(_make_invite_with_sdp())
+    msg = parse_message(_make_invite_with_sdp())
     body = "v=0\r\no=test\r\n"
     response = build_response(msg, 200, "OK", body=body, to_tag="t1")
     text = response.decode()
@@ -67,7 +67,7 @@ def test_build_response_with_body():
 
 
 def test_headers_case_insensitive():
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     assert msg.header("via") is not None
     assert msg.header("VIA") is not None
     assert msg.header("Via") is not None
@@ -86,7 +86,7 @@ def test_multi_via_preserved():
         b"Content-Length: 0\r\n"
         b"\r\n"
     )
-    msg = parse_request(raw)
+    msg = parse_message(raw)
     vias = [v for k, v in msg.headers if k.lower() == "via"]
     assert len(vias) == 2
     assert vias[0] == "SIP/2.0/UDP proxy.example.com;branch=z9hG4bKaaa"
@@ -103,7 +103,7 @@ def test_multi_via_preserved():
 
 def test_to_tag_explicit():
     """to_tag kwarg adds tag to To header."""
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     resp = build_response(msg, 200, "OK", to_tag="mytag42")
     text = resp.decode()
     assert ";tag=mytag42" in text
@@ -111,7 +111,7 @@ def test_to_tag_explicit():
 
 def test_no_tag_when_to_tag_none():
     """When to_tag is None, no tag is added to To header."""
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     resp = build_response(msg, 100, "Trying")
     text = resp.decode()
     to_line = [line for line in text.split("\r\n") if line.startswith("To:")][0]
@@ -120,7 +120,7 @@ def test_no_tag_when_to_tag_none():
 
 def test_extra_headers():
     """extra_headers kwarg appends additional headers."""
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     resp = build_response(
         msg,
         200,
@@ -145,7 +145,7 @@ def test_compact_header_forms():
         b"l: 0\r\n"
         b"\r\n"
     )
-    msg = parse_request(raw)
+    msg = parse_message(raw)
     assert msg.header("Via") == "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK123"
     from_val = msg.header("From")
     assert from_val is not None
@@ -157,7 +157,7 @@ def test_compact_header_forms():
 
 def test_content_length_byte_count():
     """Content-Length should be byte length, not character length."""
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     # Body with multi-byte characters
     body = "v=0\r\n\u00e9\r\n"  # é is 2 bytes in UTF-8
     resp = build_response(msg, 200, "OK", body=body, to_tag="t1")
@@ -169,7 +169,7 @@ def test_content_length_byte_count():
 
 def test_build_response_custom_content_type():
     """content_type parameter overrides the default application/sdp."""
-    msg = parse_request(_make_register())
+    msg = parse_message(_make_register())
     resp = build_response(
         msg, 200, "OK", body="hello", to_tag="t1", content_type="text/plain"
     )

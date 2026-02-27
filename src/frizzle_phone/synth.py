@@ -267,14 +267,11 @@ def generate_rhythm_pcm(duration_s: float = 60.0) -> list[float]:
         offset += measure_samples
 
     # Generate bass (4-measure phrases, tiled)
-    bass_phrase = generate_bass_pattern(sixteenth_samples, num_measures=4)
+    phrase_len = sixteenth_samples * 16 * 4
     bass: list[float] = [0.0] * total_samples
     offset = 0
-    phrase_len = len(bass_phrase)
     while offset < total_samples:
-        # Generate a new random phrase each time for variety
-        if offset > 0:
-            bass_phrase = generate_bass_pattern(sixteenth_samples, num_measures=4)
+        bass_phrase = generate_bass_pattern(sixteenth_samples, num_measures=4)
         chunk = min(phrase_len, total_samples - offset)
         bass[offset : offset + chunk] = bass_phrase[:chunk]
         offset += phrase_len

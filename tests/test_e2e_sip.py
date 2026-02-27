@@ -7,7 +7,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from frizzle_phone.sip.message import parse_request
+from frizzle_phone.sip.message import parse_message
 from frizzle_phone.sip.server import start_server
 
 # ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ async def test_register(sip_client):
             branch="z9hG4bKreg1",
         )
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "200"
     assert resp.header("Contact") is not None
     assert resp.header("Expires") is not None
@@ -203,11 +203,11 @@ async def test_invite_100_and_200(sip_client):
     )
     responses = await _recv_responses(queue, 2)
 
-    trying = parse_request(responses[0])
+    trying = parse_message(responses[0])
     assert trying.uri == "100"
     assert ";tag=" not in (trying.header("To") or "")
 
-    ok = parse_request(responses[1])
+    ok = parse_message(responses[1])
     assert ok.uri == "200"
     assert ";tag=" in (ok.header("To") or "")
     assert ok.body and "m=audio" in ok.body
@@ -223,8 +223,8 @@ async def test_full_call_invite_ack_bye(sip_client):
         _build_invite(server_port, client_port, call_id=cid, branch="z9hG4bKfc1")
     )
     responses = await _recv_responses(queue, 2)
-    assert parse_request(responses[0]).uri == "100"
-    assert parse_request(responses[1]).uri == "200"
+    assert parse_message(responses[0]).uri == "100"
+    assert parse_message(responses[1]).uri == "200"
 
     transport.sendto(
         _build_ack(server_port, client_port, call_id=cid, branch="z9hG4bKfc2")
@@ -232,7 +232,7 @@ async def test_full_call_invite_ack_bye(sip_client):
     transport.sendto(
         _build_bye(server_port, client_port, call_id=cid, branch="z9hG4bKfc3")
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "200"
 
 
@@ -275,14 +275,14 @@ async def test_cancel_after_200_ok(sip_client):
             branch="z9hG4bKca2",
         )
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "200"
 
     # Call is still alive — BYE returns 200 (not 481)
     transport.sendto(
         _build_bye(server_port, client_port, call_id=cid, branch="z9hG4bKca3")
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "200"
 
 
@@ -298,7 +298,7 @@ async def test_cancel_unknown_call(sip_client):
             branch="z9hG4bKcu1",
         )
     )
-    assert parse_request(await _recv(queue)).uri == "481"
+    assert parse_message(await _recv(queue)).uri == "481"
 
 
 @pytest.mark.asyncio
@@ -310,7 +310,7 @@ async def test_bye_unknown_call_returns_481(sip_client):
             server_port, client_port, call_id="no-such-call", branch="z9hG4bKbu1"
         )
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "481"
 
 
@@ -326,54 +326,25 @@ async def test_options(sip_client):
             branch="z9hG4bKopt1",
         )
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "200"
     assert "INVITE" in (resp.header("Allow") or "")
 
 
 @pytest.mark.asyncio
-async def test_refer(sip_client):
+@pytest.mark.parametrize("method", ["REFER", "SUBSCRIBE", "NOTIFY"])
+async def test_stub_methods_return_200(sip_client, method):
     transport, queue, server_port, client_port = sip_client
     transport.sendto(
         _build_request(
-            "REFER",
+            method,
             server_port,
             client_port,
-            call_id="e2e-refer",
-            branch="z9hG4bKref1",
+            call_id=f"e2e-{method.lower()}",
+            branch=f"z9hG4bK{method.lower()[:3]}1",
         )
     )
-    assert parse_request(await _recv(queue)).uri == "200"
-
-
-@pytest.mark.asyncio
-async def test_subscribe(sip_client):
-    transport, queue, server_port, client_port = sip_client
-    transport.sendto(
-        _build_request(
-            "SUBSCRIBE",
-            server_port,
-            client_port,
-            call_id="e2e-subscribe",
-            branch="z9hG4bKsub1",
-        )
-    )
-    assert parse_request(await _recv(queue)).uri == "200"
-
-
-@pytest.mark.asyncio
-async def test_notify(sip_client):
-    transport, queue, server_port, client_port = sip_client
-    transport.sendto(
-        _build_request(
-            "NOTIFY",
-            server_port,
-            client_port,
-            call_id="e2e-notify",
-            branch="z9hG4bKnot1",
-        )
-    )
-    assert parse_request(await _recv(queue)).uri == "200"
+    assert parse_message(await _recv(queue)).uri == "200"
 
 
 @pytest.mark.asyncio
@@ -388,7 +359,7 @@ async def test_unknown_method(sip_client):
             branch="z9hG4bKpub1",
         )
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "405"
     assert "INVITE" in (resp.header("Allow") or "")
 
@@ -412,6 +383,6 @@ async def test_require_unsupported(sip_client):
             extra_headers=["Require: 100rel"],
         )
     )
-    resp = parse_request(await _recv(queue))
+    resp = parse_message(await _recv(queue))
     assert resp.uri == "420"
     assert "100rel" in (resp.header("Unsupported") or "")

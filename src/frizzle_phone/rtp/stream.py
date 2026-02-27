@@ -63,6 +63,7 @@ class RtpStream:
         await self._send_loop()
 
     async def _send_loop(self) -> None:
+        assert self._transport is not None
         seq = self._initial_seq
         timestamp = self._initial_timestamp
         offset = 0
@@ -75,8 +76,7 @@ class RtpStream:
             packet = build_rtp_packet(
                 seq, timestamp, self._ssrc, payload, marker=(offset == 0)
             )
-            if self._transport is not None:
-                self._transport.sendto(packet)
+            self._transport.sendto(packet)
             seq = (seq + 1) & 0xFFFF
             timestamp = (timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
             offset += SAMPLES_PER_PACKET
