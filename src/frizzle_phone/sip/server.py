@@ -185,6 +185,7 @@ class SipServer(asyncio.DatagramProtocol):
             remote_addr=call.remote_rtp_addr,
             audio_buf=self._audio_buf,
             done_callback=done_future,
+            local_port=10000,
         )
         # Bug 13: use call_soon instead of direct callback to avoid reentrancy
         done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
