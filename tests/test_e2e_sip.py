@@ -255,15 +255,17 @@ async def test_invite_ack_auto_bye(sip_client):
 
 
 @pytest.mark.asyncio
-async def test_cancel_active_invite(sip_client):
+async def test_cancel_after_200_ok(sip_client):
+    """CANCEL after 200 OK responds 200 but doesn't tear down (RFC 3261 §9.2)."""
     transport, queue, server_port, client_port = sip_client
-    cid = "e2e-cancel"
+    cid = "e2e-cancel-after-200"
 
     transport.sendto(
         _build_invite(server_port, client_port, call_id=cid, branch="z9hG4bKca1")
     )
     await _recv_responses(queue, 2)  # 100 + 200
 
+    # CANCEL after 200 OK — should get 200 to CANCEL, but NOT 487
     transport.sendto(
         _build_request(
             "CANCEL",
@@ -273,10 +275,15 @@ async def test_cancel_active_invite(sip_client):
             branch="z9hG4bKca2",
         )
     )
-    responses = await _recv_responses(queue, 2)
-    codes = {parse_request(r).uri for r in responses}
-    assert "200" in codes
-    assert "487" in codes
+    resp = parse_request(await _recv(queue))
+    assert resp.uri == "200"
+
+    # Call is still alive — BYE returns 200 (not 481)
+    transport.sendto(
+        _build_bye(server_port, client_port, call_id=cid, branch="z9hG4bKca3")
+    )
+    resp = parse_request(await _recv(queue))
+    assert resp.uri == "200"
 
 
 @pytest.mark.asyncio
@@ -292,6 +299,19 @@ async def test_cancel_unknown_call(sip_client):
         )
     )
     assert parse_request(await _recv(queue)).uri == "481"
+
+
+@pytest.mark.asyncio
+async def test_bye_unknown_call_returns_481(sip_client):
+    """BYE for unknown Call-ID should return 481 (RFC 3261 §15.1.2)."""
+    transport, queue, server_port, client_port = sip_client
+    transport.sendto(
+        _build_bye(
+            server_port, client_port, call_id="no-such-call", branch="z9hG4bKbu1"
+        )
+    )
+    resp = parse_request(await _recv(queue))
+    assert resp.uri == "481"
 
 
 @pytest.mark.asyncio

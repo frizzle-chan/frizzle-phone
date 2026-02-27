@@ -20,7 +20,7 @@ from frizzle_phone.sip.message import (
     parse_request,
 )
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
-from frizzle_phone.sip.transaction import InviteServerTxn
+from frizzle_phone.sip.transaction import InviteServerTxn, TxnState
 
 logger = logging.getLogger(__name__)
 
@@ -35,33 +35,53 @@ def _add_via_received_params(msg: SipMessage, addr: tuple[str, int]) -> None:
     """Add received/rport Via params per RFC 3581.
 
     Mutates ``msg.headers`` in-place, tagging the top Via with the
-    observed source IP and port.
+    observed source IP and port.  Only fills ``rport`` when the client
+    requested it (i.e. the Via already contains an empty ``rport`` parameter).
     """
     for i, (key, value) in enumerate(msg.headers):
         if key.lower() == "via":
-            msg.headers[i] = (key, f"{value};received={addr[0]};rport={addr[1]}")
+            # RFC 3581 §4: only fill rport when the client included it
+            client_rport = ";rport" in value
+            if client_rport:
+                # Strip the empty rport param; we add it back with the value
+                parts = value.split(";")
+                parts = [p for p in parts if not p.strip().startswith("rport")]
+                value = ";".join(parts)
+            value = f"{value};received={addr[0]}"
+            if client_rport:
+                value += f";rport={addr[1]}"
+            msg.headers[i] = (key, value)
             return
 
 
 def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str, int]:
-    """Determine response address per RFC 3261 §18.2.2.
+    """Determine response address per RFC 3261 §18.2.2 and RFC 3581 §4.
 
-    Routes the response to the Via sent-by address (which Cisco phones set
-    to their SIP listening port, typically 5060).
+    When the client included ``rport`` in its Via, responses go to the
+    observed source port.  Otherwise, fall back to the Via sent-by port.
     """
     via = msg.header("Via")
     if via is None:
         return addr
 
-    # Parse sent-by from Via: "SIP/2.0/UDP host:port;params"
     params = via.split(";")
+
+    # RFC 3581 §4: if rport is present with a value, use it
+    for param in params[1:]:
+        kv = param.strip().split("=", 1)
+        if kv[0].strip() == "rport" and len(kv) == 2:
+            try:
+                return (addr[0], int(kv[1].strip()))
+            except ValueError:
+                pass
+
+    # Fallback: Via sent-by per RFC 3261 §18.2.2
     sent_by = params[0].strip()
     parts = sent_by.split(None, 1)
     if len(parts) < 2:
         return addr
     host_port = parts[1]
 
-    host = addr[0]
     if ":" in host_port:
         port_str = host_port.rsplit(":", 1)[1]
         try:
@@ -71,7 +91,7 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
     else:
         port = 5060
 
-    return (host, port)
+    return (addr[0], port)
 
 
 @dataclasses.dataclass
@@ -288,7 +308,10 @@ class SipServer(asyncio.DatagramProtocol):
             "OK",
             body=sdp,
             to_tag=to_tag,
-            extra_headers=[("Contact", f"<sip:frizzle@{self._server_ip}:5060>")],
+            extra_headers=[
+                ("Contact", f"<sip:frizzle@{self._server_ip}:5060>"),
+                ("Allow", ALLOWED_METHODS),
+            ],
         )
 
         # Send 200 OK through transaction layer for Timer G retransmission
@@ -339,10 +362,13 @@ class SipServer(asyncio.DatagramProtocol):
     ) -> None:
         call_id = msg.header("Call-ID") or ""
         call = self._calls.pop(call_id, None)
-        if call is not None:
-            self._terminate_call(call)
-        tag = call.to_tag if call else generate_tag()
-        response = build_response(msg, 200, "OK", to_tag=tag)
+        if call is None:
+            # RFC 3261 §15.1.2: unknown dialog → 481
+            response = build_response(msg, 481, "Call/Transaction Does Not Exist")
+            self._send(response, resp_addr)
+            return
+        self._terminate_call(call)
+        response = build_response(msg, 200, "OK", to_tag=call.to_tag)
         self._send(response, resp_addr)
 
     def _handle_cancel(
@@ -353,15 +379,25 @@ class SipServer(asyncio.DatagramProtocol):
     ) -> None:
         call_id = msg.header("Call-ID") or ""
 
-        # Bug 8: look up call first, send 481 if not found
-        call = self._calls.pop(call_id, None)
+        call = self._calls.get(call_id)
         if call is None:
             no_match = build_response(msg, 481, "Call/Transaction Does Not Exist")
             self._send(no_match, resp_addr)
             return
 
-        # 200 OK for the CANCEL itself
-        ok = build_response(msg, 200, "OK")
+        # RFC 3261 §9.2: CANCEL has no effect once a final response was sent.
+        # If the INVITE transaction left PROCEEDING, acknowledge the CANCEL
+        # but do NOT tear down the call or send 487.
+        if call.invite_branch:
+            txn = self._invite_txns.get(call.invite_branch)
+            if txn is not None and txn.state != TxnState.PROCEEDING:
+                ok = build_response(msg, 200, "OK", to_tag=call.to_tag)
+                self._send(ok, resp_addr)
+                return
+
+        # INVITE still in PROCEEDING — normal CANCEL processing
+        self._calls.pop(call_id, None)
+        ok = build_response(msg, 200, "OK", to_tag=call.to_tag)
         self._send(ok, resp_addr)
 
         self._terminate_call(call)
@@ -472,15 +508,16 @@ class SipServer(asyncio.DatagramProtocol):
         self._invite_txns.pop(branch, None)
 
     def _cleanup_all_calls(self) -> None:
-        """Stop all active calls and transactions during shutdown (Bug 16)."""
-        for txn in list(self._invite_txns.values()):
-            txn.terminate()
-        self._invite_txns.clear()
-        for call in self._calls.values():
-            call.terminated = True
-            if call.rtp_stream is not None:
-                call.rtp_stream.stop()
+        """Stop all active calls and transactions during shutdown."""
+        calls = list(self._calls.values())
         self._calls.clear()
+        for call in calls:
+            self._terminate_call(call)
+        # Terminate any orphaned transactions not linked to a call
+        remaining_txns = list(self._invite_txns.values())
+        self._invite_txns.clear()
+        for txn in remaining_txns:
+            txn.terminate()
         for task in self._rtp_tasks:
             task.cancel()
         self._rtp_tasks.clear()
