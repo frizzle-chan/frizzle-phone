@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import random
+import string
 
 # RFC 3261 §7.3.1 — compact header form abbreviations
 _COMPACT_HEADERS = {
@@ -142,3 +144,39 @@ def build_request(
     for name, value in headers:
         lines.append(f"{name}: {value}")
     return _encode_message(lines, body, content_type)
+
+
+# ---------------------------------------------------------------------------
+# SIP header/parameter utilities
+# ---------------------------------------------------------------------------
+
+_TAG_CHARS = string.ascii_lowercase + string.digits
+
+
+def generate_tag() -> str:
+    """Generate a random SIP tag value."""
+    return "".join(random.choices(_TAG_CHARS, k=8))
+
+
+def generate_branch() -> str:
+    """Generate a random Via branch parameter (RFC 3261 magic cookie prefix)."""
+    return "z9hG4bK" + "".join(random.choices(_TAG_CHARS, k=8))
+
+
+def extract_branch(msg: SipMessage) -> str | None:
+    """Extract the Via branch parameter for transaction matching."""
+    via = msg.header("Via")
+    if via is None:
+        return None
+    for param in via.split(";"):
+        param = param.strip()
+        if param.startswith("branch="):
+            return param[7:]
+    return None
+
+
+def extract_tag(header_value: str) -> str:
+    """Extract the tag parameter from a SIP From/To header value."""
+    if ";tag=" in header_value:
+        return header_value.split(";tag=")[1].split(";")[0]
+    return ""

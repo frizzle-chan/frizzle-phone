@@ -12,12 +12,7 @@ import string
 from collections.abc import Callable
 
 from frizzle_phone.rtp.stream import RtpStream
-from frizzle_phone.sip.message import (
-    SipMessage,
-    build_request,
-    build_response,
-    parse_request,
-)
+from frizzle_phone.sip.message import SipMessage, build_response, parse_request
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 from frizzle_phone.sip.transaction import InviteServerTxn
 
@@ -82,9 +77,12 @@ class Call:
 
 def get_server_ip() -> str:
     """Detect the local IP address by opening a UDP socket."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
         sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
+    finally:
+        sock.close()
 
 
 def _extract_branch(msg: SipMessage) -> str | None:
@@ -97,13 +95,6 @@ def _extract_branch(msg: SipMessage) -> str | None:
         if param.startswith("branch="):
             return param[7:]
     return None
-
-
-def _extract_tag(header_value: str) -> str:
-    """Extract the tag parameter from a SIP From/To header value."""
-    if ";tag=" in header_value:
-        return header_value.split(";tag=")[1].split(";")[0]
-    return ""
 
 
 def _generate_tag() -> str:
@@ -160,14 +151,8 @@ class SipServer(asyncio.DatagramProtocol):
         logger.debug("Raw from %s:\n%s", addr, data.decode("utf-8", errors="replace"))
         try:
             msg = parse_request(data)
-        except (ValueError, UnicodeDecodeError, IndexError):
+        except Exception:
             logger.exception("Failed to parse SIP message from %s", addr)
-            return
-
-        # Detect SIP responses (e.g. "SIP/2.0 200 OK") and ignore them —
-        # we are a UAS and don't process responses to our own requests.
-        if msg.method.startswith("SIP/"):
-            logger.debug("Ignoring SIP response from %s: %s", addr, msg.uri)
             return
 
         logger.info("Received %s from %s", msg.method, addr)
@@ -264,7 +249,10 @@ class SipServer(asyncio.DatagramProtocol):
         resp_addr: tuple[str, int],
     ) -> None:
         call_id = msg.header("Call-ID") or ""
-        from_tag = _extract_tag(msg.header("From") or "")
+        from_header = msg.header("From") or ""
+        from_tag = ""
+        if ";tag=" in from_header:
+            from_tag = from_header.split(";tag=")[1].split(";")[0]
 
         # Parse SDP offer for remote RTP address (Bug 2)
         remote_rtp_addr = (addr[0], 0)
@@ -346,10 +334,6 @@ class SipServer(asyncio.DatagramProtocol):
         # Notify INVITE transaction that ACK arrived (stops Timer G)
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
-
-        # Guard against duplicate ACK starting a second RTP stream
-        if call.rtp_stream is not None:
-            return
 
         loop = asyncio.get_running_loop()
         done_future: asyncio.Future[None] = loop.create_future()
@@ -461,32 +445,33 @@ class SipServer(asyncio.DatagramProtocol):
             return
         self._terminate_call(call)
 
-        self._calls.pop(call.call_id, None)
+        call_id = call.call_id
+        remote_addr = call.remote_addr
+        self._calls.pop(call_id, None)
 
+        via_branch = _generate_branch()
         # Bug 12: use remote_contact as Request-URI
         request_uri = call.remote_contact
+        # Strip angle brackets if present
         if request_uri.startswith("<") and request_uri.endswith(">"):
             request_uri = request_uri[1:-1]
 
-        ip = self._server_ip
-        bye_msg = build_request(
-            "BYE",
-            request_uri,
-            headers=[
-                ("Via", f"SIP/2.0/UDP {ip}:5060;branch={_generate_branch()}"),
-                # Bug 3: From uses our to_tag, To uses their from_tag
-                (
-                    "From",
-                    f"<sip:frizzle@{ip}>;tag={call.to_tag}",
-                ),
-                ("To", f"<sip:{call.remote_addr[0]}>;tag={call.from_tag}"),
-                ("Call-ID", call.call_id),
-                ("CSeq", "1 BYE"),
-                ("Max-Forwards", "70"),
-            ],
-        )
-        self._send(bye_msg, call.remote_addr)
-        logger.info("Sent BYE for call %s", call.call_id)
+        lines = [
+            f"BYE {request_uri} SIP/2.0",
+            f"Via: SIP/2.0/UDP {self._server_ip}:5060;branch={via_branch}",
+            # Bug 3: From uses our to_tag, To uses their from_tag
+            f"From: <sip:frizzle@{self._server_ip}>;tag={call.to_tag}",
+            f"To: <sip:{remote_addr[0]}>;tag={call.from_tag}",
+            f"Call-ID: {call_id}",
+            "CSeq: 1 BYE",
+            "Max-Forwards: 70",
+            "Content-Length: 0",
+            "",
+            "",
+        ]
+        bye_msg = "\r\n".join(lines).encode("utf-8")
+        self._send(bye_msg, remote_addr)
+        logger.info("Sent BYE for call %s", call_id)
 
     def _remove_txn(self, branch: str) -> None:
         """Callback for transaction cleanup after termination."""
@@ -494,8 +479,13 @@ class SipServer(asyncio.DatagramProtocol):
 
     def _cleanup_all_calls(self) -> None:
         """Stop all active calls and transactions during shutdown (Bug 16)."""
+        for txn in list(self._invite_txns.values()):
+            txn.terminate()
+        self._invite_txns.clear()
         for call in self._calls.values():
-            self._terminate_call(call)
+            call.terminated = True
+            if call.rtp_stream is not None:
+                call.rtp_stream.stop()
         self._calls.clear()
         for task in self._rtp_tasks:
             task.cancel()
