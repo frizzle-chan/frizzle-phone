@@ -11,7 +11,7 @@ import random
 SAMPLE_RATE = 8000
 
 # E Phrygian: E F G A B C D (rooted in bass octave)
-E_PHRYGIAN_FREQS = [
+_E_PHRYGIAN_FREQS = [
     82.41,  # E2
     87.31,  # F2
     98.00,  # G2
@@ -20,19 +20,6 @@ E_PHRYGIAN_FREQS = [
     130.81,  # C3
     146.83,  # D3
     164.81,  # E3
-]
-
-__all__ = [
-    "SAMPLE_RATE",
-    "E_PHRYGIAN_FREQS",
-    "kick",
-    "hihat",
-    "snare",
-    "saw",
-    "reese_note",
-    "mix_into",
-    "generate_bass_pattern",
-    "generate_rhythm_pcm",
 ]
 
 
@@ -117,7 +104,7 @@ def snare(duration_s: float = 0.10) -> list[float]:
     return out
 
 
-def saw(phase: float) -> float:
+def _saw(phase: float) -> float:
     """Band-limited-ish sawtooth from phase value."""
     return 2.0 * (phase - math.floor(phase + 0.5))
 
@@ -142,7 +129,7 @@ def reese_note(freq: float, duration_s: float) -> list[float]:
     out: list[float] = []
     for i in range(n):
         t = i / SAMPLE_RATE
-        raw = 0.5 * (saw(t * f1) + saw(t * f2))
+        raw = 0.5 * (_saw(t * f1) + _saw(t * f2))
         # Amplitude envelope: quick attack, sustain, quick release
         if i < 20:
             env = i / 20.0
@@ -195,15 +182,15 @@ def generate_bass_pattern(sixteenth_samples: int, num_measures: int = 4) -> list
 
     # Favour root (E) and fifth (B) more heavily
     weighted_freqs = [
-        E_PHRYGIAN_FREQS[0],  # E — root
-        E_PHRYGIAN_FREQS[0],  # E
-        E_PHRYGIAN_FREQS[1],  # F
-        E_PHRYGIAN_FREQS[2],  # G
-        E_PHRYGIAN_FREQS[3],  # A
-        E_PHRYGIAN_FREQS[4],  # B — fifth
-        E_PHRYGIAN_FREQS[4],  # B
-        E_PHRYGIAN_FREQS[5],  # C
-        E_PHRYGIAN_FREQS[6],  # D
+        _E_PHRYGIAN_FREQS[0],  # E — root
+        _E_PHRYGIAN_FREQS[0],  # E
+        _E_PHRYGIAN_FREQS[1],  # F
+        _E_PHRYGIAN_FREQS[2],  # G
+        _E_PHRYGIAN_FREQS[3],  # A
+        _E_PHRYGIAN_FREQS[4],  # B — fifth
+        _E_PHRYGIAN_FREQS[4],  # B
+        _E_PHRYGIAN_FREQS[5],  # C
+        _E_PHRYGIAN_FREQS[6],  # D
     ]
 
     pos = 0

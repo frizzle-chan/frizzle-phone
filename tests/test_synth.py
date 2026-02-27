@@ -1,12 +1,12 @@
 from frizzle_phone.synth import (
     SAMPLE_RATE,
+    _saw,
     generate_bass_pattern,
     generate_rhythm_pcm,
     hihat,
     kick,
     mix_into,
     reese_note,
-    saw,
     snare,
 )
 
@@ -37,7 +37,7 @@ def test_snare_length_and_range():
 def test_saw_range():
     # Sawtooth should stay within [-1, 1]
     for phase in [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.3]:
-        assert -1.0 <= saw(phase) <= 1.0
+        assert -1.0 <= _saw(phase) <= 1.0
 
 
 def test_reese_note_length():

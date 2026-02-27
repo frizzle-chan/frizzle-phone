@@ -87,7 +87,7 @@ def test_multi_via_preserved():
         b"\r\n"
     )
     msg = parse_request(raw)
-    vias = msg.header_values("Via")
+    vias = [v for k, v in msg.headers if k.lower() == "via"]
     assert len(vias) == 2
     assert vias[0] == "SIP/2.0/UDP proxy.example.com;branch=z9hG4bKaaa"
     assert vias[1] == "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKbbb"

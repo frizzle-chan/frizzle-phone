@@ -7,16 +7,7 @@ import pytest
 
 from frizzle_phone.sip.transaction import InviteServerTxn
 
-
-class FakeTransport:
-    """Captures sendto() calls."""
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[bytes, tuple[str, int]]] = []
-
-    def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
-        self.sent.append((data, addr))
-
+from .conftest import FakeTransport
 
 ADDR = ("10.0.0.1", 5060)
 RESPONSE = b"SIP/2.0 200 OK\r\n\r\n"
@@ -41,7 +32,7 @@ def _make_txn(
         transport = FakeTransport()
     txn = InviteServerTxn(
         branch=BRANCH,
-        transport=transport,  # type: ignore[arg-type]
+        transport=transport,
         loop=loop,
         on_timeout=on_timeout if on_timeout is not None else _noop_timeout,
         on_terminated=(

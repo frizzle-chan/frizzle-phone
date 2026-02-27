@@ -36,11 +36,6 @@ class SipMessage:
                 return value
         return None
 
-    def header_values(self, name: str) -> list[str]:
-        """Return all values for a header name (case-insensitive)."""
-        lower = name.lower()
-        return [value for key, value in self.headers if key.lower() == lower]
-
 
 def parse_request(data: bytes) -> SipMessage:
     """Parse a SIP request from raw bytes."""
@@ -97,7 +92,7 @@ def build_response(
     """Build a SIP response mirroring key headers from the request."""
     lines = [f"SIP/2.0 {status_code} {reason}"]
 
-    # Mirror ALL Via headers in order (Bug 5)
+    # Mirror all Via headers in order (RFC 3261 §8.2.6.2)
     for key, value in request.headers:
         if key.lower() == "via":
             lines.append(f"Via: {value}")
@@ -108,7 +103,7 @@ def build_response(
         if value is not None:
             lines.append(f"{hdr}: {value}")
 
-    # To header — only add tag when explicitly provided (Bug 1 + 7)
+    # To header — only add tag when explicitly provided
     to_value = request.header("To")
     if to_value is not None:
         if to_tag is not None and ";tag=" not in to_value:

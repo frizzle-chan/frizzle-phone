@@ -1,11 +1,8 @@
 """μ-law (G.711 PCMU) encoder."""
 
-from frizzle_phone.synth import generate_rhythm_pcm
-
 SAMPLE_RATE = 8000
 ULAW_BIAS = 0x84
 ULAW_CLIP = 32635
-SILENCE = 0xFF
 
 
 def _encode_ulaw(sample: int) -> int:
@@ -41,12 +38,6 @@ def _build_ulaw_table() -> bytes:
 _ULAW_TABLE: bytes = _build_ulaw_table()
 
 
-def linear_to_ulaw(sample: int) -> int:
-    """Convert a 16-bit signed PCM sample to 8-bit μ-law."""
-    sample = max(-32768, min(32767, sample))
-    return _ULAW_TABLE[sample & 0xFFFF]
-
-
 def pcm_to_ulaw(samples: list[float], peak: float = 0.95) -> bytes:
     """Convert float PCM buffer to μ-law bytes with normalisation."""
     # Find actual peak for headroom
@@ -62,8 +53,3 @@ def pcm_to_ulaw(samples: list[float], peak: float = 0.95) -> bytes:
         pcm = max(-32768, min(32767, pcm))
         buf[i] = table[pcm & 0xFFFF]
     return bytes(buf)
-
-
-def generate_rhythm(duration_s: float = 60.0) -> bytes:
-    """Pre-render a techno beat at 130 BPM with Reese bass as μ-law bytes."""
-    return pcm_to_ulaw(generate_rhythm_pcm(duration_s))

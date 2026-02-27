@@ -4,8 +4,9 @@ import asyncio
 import logging
 import signal
 
-from frizzle_phone.rtp.pcmu import generate_rhythm
+from frizzle_phone.rtp.pcmu import pcm_to_ulaw
 from frizzle_phone.sip.server import get_server_ip, start_server
+from frizzle_phone.synth import generate_rhythm_pcm
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -17,7 +18,9 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     loop = asyncio.get_running_loop()
     server_ip = get_server_ip()
-    audio_buf = await loop.run_in_executor(None, generate_rhythm, 60.0)
+    audio_buf = await loop.run_in_executor(
+        None, lambda: pcm_to_ulaw(generate_rhythm_pcm(60.0))
+    )
     transport = await start_server(
         "0.0.0.0", 5060, server_ip=server_ip, audio_buf=audio_buf
     )
