@@ -16,7 +16,45 @@ from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_METHODS = "INVITE, ACK, BYE, CANCEL, REGISTER"
+ALLOWED_METHODS = (
+    "INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, REFER, SUBSCRIBE, NOTIFY"
+)
+
+
+def _response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str, int]:
+    """Determine response address per RFC 3261 §18.2.2 + RFC 3581 received/rport.
+
+    Adds received and rport Via params so the phone knows its observed address,
+    then routes the response to the Via sent-by address (which Cisco phones set
+    to their SIP listening port, typically 5060).
+    """
+    for i, (key, value) in enumerate(msg.headers):
+        if key.lower() == "via":
+            msg.headers[i] = (key, f"{value};received={addr[0]};rport={addr[1]}")
+            via_value = value
+            break
+    else:
+        return addr
+
+    # Parse sent-by from Via: "SIP/2.0/UDP host:port;params"
+    params = via_value.split(";")
+    sent_by = params[0].strip()
+    parts = sent_by.split(None, 1)
+    if len(parts) < 2:
+        return addr
+    host_port = parts[1]
+
+    host = addr[0]
+    if ":" in host_port:
+        port_str = host_port.rsplit(":", 1)[1]
+        try:
+            port = int(port_str)
+        except ValueError:
+            return addr
+    else:
+        port = 5060
+
+    return (host, port)
 
 
 @dataclasses.dataclass
@@ -70,6 +108,14 @@ class SipServer(asyncio.DatagramProtocol):
         self._cleanup_all_calls()
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        # CRLF keepalive (RFC 5626 §4.4.1) — respond with CRLF
+        stripped = data.strip(b"\r\n ")
+        if not stripped:
+            logger.debug("Keepalive CRLF from %s", addr)
+            self._send(b"\r\n", addr)
+            return
+
+        logger.debug("Raw from %s:\n%s", addr, data.decode("utf-8", errors="replace"))
         try:
             msg = parse_request(data)
         except Exception:
@@ -78,16 +124,28 @@ class SipServer(asyncio.DatagramProtocol):
 
         logger.info("Received %s from %s", msg.method, addr)
 
+        # RFC 3261 §18.2.2: send responses to Via address, not packet source
+        resp_addr = _response_addr(msg, addr)
+
         handler = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
             "ACK": self._handle_ack,
             "BYE": self._handle_bye,
             "CANCEL": self._handle_cancel,
+            "OPTIONS": self._handle_options,
+            "REFER": self._handle_refer,
+            "SUBSCRIBE": self._handle_subscribe,
+            "NOTIFY": self._handle_notify,
         }.get(msg.method)
 
+        if resp_addr != addr:
+            logger.info(
+                "Response to %s (Via sent-by) instead of %s (source)", resp_addr, addr
+            )
+
         if handler is not None:
-            handler(msg, addr)
+            handler(msg, addr, resp_addr)
         else:
             # Bug 11: respond 405 instead of silently ignoring
             response = build_response(
@@ -96,18 +154,26 @@ class SipServer(asyncio.DatagramProtocol):
                 "Method Not Allowed",
                 extra_headers=[("Allow", ALLOWED_METHODS)],
             )
-            self._send(response, addr)
+            self._send(response, resp_addr)
 
     def _send(self, data: bytes, addr: tuple[str, int]) -> None:
         if self._transport is not None:
             self._transport.sendto(data, addr)
 
-    def _handle_register(self, msg: SipMessage, addr: tuple[str, int]) -> None:
-        # Bug 10: echo Contact with expires
+    def _handle_register(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
+        logger.debug("REGISTER from %s:\n%s", addr, msg.headers)
         contact = msg.header("Contact")
         extra: list[tuple[str, str]] = []
         if contact is not None:
             extra.append(("Contact", f"{contact};expires=3600"))
+        # Expires header — use request value or default to 3600
+        expires = msg.header("Expires") or "3600"
+        extra.append(("Expires", expires))
         response = build_response(
             msg,
             200,
@@ -115,9 +181,15 @@ class SipServer(asyncio.DatagramProtocol):
             to_tag=_generate_tag(),
             extra_headers=extra,
         )
-        self._send(response, addr)
+        logger.debug("REGISTER response:\n%s", response.decode())
+        self._send(response, resp_addr)
 
-    def _handle_invite(self, msg: SipMessage, addr: tuple[str, int]) -> None:
+    def _handle_invite(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
         call_id = msg.header("Call-ID") or ""
         from_header = msg.header("From") or ""
         from_tag = ""
@@ -156,7 +228,7 @@ class SipServer(asyncio.DatagramProtocol):
 
         # 100 Trying — no to_tag (Bug 7)
         trying = build_response(msg, 100, "Trying")
-        self._send(trying, addr)
+        self._send(trying, resp_addr)
 
         # 200 OK with SDP, to_tag, and Contact (Bug 1, 6)
         sdp = build_sdp_answer(self._server_ip)
@@ -168,9 +240,14 @@ class SipServer(asyncio.DatagramProtocol):
             to_tag=to_tag,
             extra_headers=[("Contact", f"<sip:frizzle@{self._server_ip}:5060>")],
         )
-        self._send(ok, addr)
+        self._send(ok, resp_addr)
 
-    def _handle_ack(self, msg: SipMessage, addr: tuple[str, int]) -> None:
+    def _handle_ack(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
         call_id = msg.header("Call-ID") or ""
         call = self._calls.get(call_id)
         if call is None:
@@ -191,7 +268,12 @@ class SipServer(asyncio.DatagramProtocol):
         done_future.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
         asyncio.ensure_future(call.rtp_stream.start())
 
-    def _handle_bye(self, msg: SipMessage, addr: tuple[str, int]) -> None:
+    def _handle_bye(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
         call_id = msg.header("Call-ID") or ""
         call = self._calls.pop(call_id, None)
         if call is not None:
@@ -201,21 +283,26 @@ class SipServer(asyncio.DatagramProtocol):
                 call.rtp_stream.stop()
         tag = call.to_tag if call else _generate_tag()
         response = build_response(msg, 200, "OK", to_tag=tag)
-        self._send(response, addr)
+        self._send(response, resp_addr)
 
-    def _handle_cancel(self, msg: SipMessage, addr: tuple[str, int]) -> None:
+    def _handle_cancel(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
         call_id = msg.header("Call-ID") or ""
 
         # Bug 8: look up call first, send 481 if not found
         call = self._calls.pop(call_id, None)
         if call is None:
             no_match = build_response(msg, 481, "Call/Transaction Does Not Exist")
-            self._send(no_match, addr)
+            self._send(no_match, resp_addr)
             return
 
         # 200 OK for the CANCEL itself
         ok = build_response(msg, 200, "OK")
-        self._send(ok, addr)
+        self._send(ok, resp_addr)
 
         call.terminated = True
         if call.rtp_stream is not None:
@@ -228,7 +315,53 @@ class SipServer(asyncio.DatagramProtocol):
                 "Request Terminated",
                 to_tag=call.to_tag,
             )
-            self._send(terminated, addr)
+            self._send(terminated, resp_addr)
+
+    def _handle_options(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
+        """Respond to OPTIONS (used as keepalive by Cisco phones)."""
+        response = build_response(
+            msg,
+            200,
+            "OK",
+            to_tag=_generate_tag(),
+            extra_headers=[("Allow", ALLOWED_METHODS)],
+        )
+        self._send(response, resp_addr)
+
+    def _handle_refer(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
+        """Accept REFER (Cisco phones send alarm/diagnostic data via REFER)."""
+        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
+        self._send(response, resp_addr)
+
+    def _handle_subscribe(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
+        """Accept SUBSCRIBE for MWI/presence."""
+        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
+        self._send(response, resp_addr)
+
+    def _handle_notify(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
+        """Accept NOTIFY."""
+        response = build_response(msg, 200, "OK", to_tag=_generate_tag())
+        self._send(response, resp_addr)
 
     def _send_bye(self, call: Call) -> None:
         """Send a BYE to the remote phone after audio finishes."""
