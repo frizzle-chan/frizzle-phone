@@ -6,7 +6,7 @@ import logging
 from frizzle_phone.sip.server import start_server
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
