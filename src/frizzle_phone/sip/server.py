@@ -32,11 +32,16 @@ ALLOWED_METHODS = (
 
 
 def _add_via_received_params(msg: SipMessage, addr: tuple[str, int]) -> None:
-    """Add received/rport Via params per RFC 3581.
+    """Add received/rport Via params per RFC 3581 §4.
 
     Mutates ``msg.headers`` in-place, tagging the top Via with the
     observed source IP and port.  Only fills ``rport`` when the client
     requested it (i.e. the Via already contains an empty ``rport`` parameter).
+
+    RFC 3261 §18.2.1 requires the ``received`` parameter when the Via
+    sent-by differs from the packet source address.  RFC 3581 §4 extends
+    this with the ``rport`` parameter so the server can reply to the
+    observed source port (symmetric response routing for NAT traversal).
     """
     for i, (key, value) in enumerate(msg.headers):
         if key.lower() == "via":
@@ -66,7 +71,8 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
 
     params = parse_via_params(via)
 
-    # RFC 3581 §4: if rport is present with a value, use it
+    # RFC 3581 §4: if rport is present with a value, respond to observed
+    # source port (enables symmetric response routing through NATs)
     rport = params.get("rport")
     if rport:
         try:
@@ -74,7 +80,8 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
         except ValueError:
             pass
 
-    # Fallback: Via sent-by per RFC 3261 §18.2.2
+    # RFC 3261 §18.2.2: for unreliable unicast transports, if "received"
+    # is set, send to that address using the port from "sent-by" (or 5060)
     sent_by = via.split(";")[0].strip()
     parts = sent_by.split(None, 1)
     if len(parts) < 2:
@@ -169,12 +176,15 @@ class SipServer(asyncio.DatagramProtocol):
 
         logger.info("Received %s from %s", msg.method, addr)
 
-        # RFC 3581: tag Via with observed source address
+        # RFC 3581 §4 / RFC 3261 §18.2.1: tag Via with observed source address
         _add_via_received_params(msg, addr)
-        # RFC 3261 §18.2.2: send responses to Via address, not packet source
+        # RFC 3261 §18.2.2: determine response destination from Via header
         resp_addr = _compute_response_addr(msg, addr)
 
-        # RFC 3261 §8.2.2: reject requests with unsupported Require options
+        # RFC 3261 §8.2.2.3: reject unsupported Require options with 420
+        # and echo them in an Unsupported header. ACK and CANCEL are exempt
+        # per §8.2.2.3 ("MUST NOT be used in a SIP CANCEL request, or in
+        # an ACK request sent for a non-2xx response").
         if msg.method not in ("ACK", "CANCEL"):
             require = msg.header("Require")
             if require:
@@ -187,8 +197,9 @@ class SipServer(asyncio.DatagramProtocol):
                 self._send(response, resp_addr)
                 return
 
-        # Retransmission detection: if an INVITE matches an existing transaction,
-        # re-send the cached response instead of re-processing (RFC 3261 §17.2.1)
+        # RFC 3261 §17.2.1: if a retransmitted INVITE matches an existing
+        # server transaction (by Via branch), retransmit the most recent
+        # provisional or final response rather than re-processing.
         branch = extract_branch(msg)
         if branch and msg.method == "INVITE" and branch in self._invite_txns:
             self._invite_txns[branch].receive_retransmit()
@@ -204,7 +215,9 @@ class SipServer(asyncio.DatagramProtocol):
         if handler is not None:
             handler(msg, addr, resp_addr)
         else:
-            # RFC 3261 §8.2.1: 405 for unsupported methods
+            # RFC 3261 §8.2.1: UAS MUST respond 405 for methods it does
+            # not support, and MUST include an Allow header listing
+            # the supported methods.
             response = build_response(
                 msg,
                 405,
@@ -236,11 +249,15 @@ class SipServer(asyncio.DatagramProtocol):
         logger.debug("REGISTER from %s:\n%s", addr, msg.headers)
         contact = msg.header("Contact")
         extra: list[tuple[str, str]] = []
+        # RFC 3261 §10.3 step 8: 200 OK MUST contain Contact headers
+        # enumerating current bindings, each with an "expires" parameter.
         if contact is not None:
             extra.append(("Contact", f"{contact};expires=3600"))
-        # Expires header — use request value or default to 3600
+        # RFC 3261 §10.3 step 7: use the request's Expires value if
+        # present, otherwise fall back to a locally-configured default.
         expires = msg.header("Expires") or "3600"
         extra.append(("Expires", expires))
+        # RFC 3261 §10.3 step 8: return 200 OK with current bindings
         response = build_response(
             msg,
             200,
@@ -284,7 +301,13 @@ class SipServer(asyncio.DatagramProtocol):
     def _setup_invite_txn(
         self, call: Call, response: bytes, resp_addr: tuple[str, int], branch: str
     ) -> None:
-        """Create an INVITE server transaction and send the 200 OK."""
+        """Create an INVITE server transaction and send the 200 OK.
+
+        RFC 3261 §13.3.1.4: 2xx responses are retransmitted by the TU
+        (not the transaction layer) at intervals starting at T1 and
+        doubling up to T2, until an ACK is received. If no ACK arrives
+        within 64*T1 seconds, the session SHOULD be terminated with BYE.
+        """
         old_txn = self._invite_txns.pop(branch, None)
         if old_txn is not None:
             old_txn.terminate()
@@ -309,6 +332,9 @@ class SipServer(asyncio.DatagramProtocol):
         call_id, from_tag, remote_rtp_addr, remote_contact, remote_from = (
             self._parse_invite_params(msg, addr)
         )
+        # RFC 3261 §8.2.6.2: UAS MUST add a tag to the To header field in
+        # responses (except 100 Trying). The same tag is used for all
+        # responses within this INVITE transaction.
         to_tag = generate_tag()
 
         # Clean up existing call if re-INVITE
@@ -328,10 +354,15 @@ class SipServer(asyncio.DatagramProtocol):
         )
         self._calls[call_id] = call
 
-        # 100 Trying — no to_tag (RFC 3261 §8.2.6.1)
+        # RFC 3261 §17.2.1: send 100 Trying immediately to quench
+        # INVITE retransmissions. §17.2.1: tag insertion in the To
+        # field of 100 is downgraded from MAY to SHOULD NOT, so no
+        # to_tag here.
         self._send(build_response(msg, 100, "Trying"), resp_addr)
 
-        # 200 OK with SDP, to_tag, and Contact
+        # RFC 3261 §13.3.1.4: 2xx response with SDP answer establishes
+        # the session. Contact header required per §12.1.1 so the peer
+        # can route subsequent in-dialog requests (ACK, BYE) to us.
         ok = build_response(
             msg,
             200,
@@ -356,13 +387,17 @@ class SipServer(asyncio.DatagramProtocol):
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
+        # RFC 3261 §13.3.1.4: ACK for a 2xx is generated by the UAC core
+        # (not the transaction layer) and arrives as a new request with no
+        # matching server transaction (§18.2.1).
         call_id = msg.header("Call-ID") or ""
         call = self._calls.get(call_id)
         if call is None:
             logger.warning("ACK for unknown call: %s", call_id)
             return
 
-        # Notify INVITE transaction that ACK arrived (stops Timer G)
+        # RFC 3261 §13.3.1.4: ACK receipt stops 2xx retransmission
+        # (Timer G in the INVITE server transaction).
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
 
@@ -378,11 +413,14 @@ class SipServer(asyncio.DatagramProtocol):
         call_id = msg.header("Call-ID") or ""
         call = self._calls.pop(call_id, None)
         if call is None:
-            # RFC 3261 §15.1.2: unknown dialog → 481
+            # RFC 3261 §15.1.2: BYE that does not match an existing
+            # dialog SHOULD be rejected with 481.
             response = build_response(msg, 481, "Call/Transaction Does Not Exist")
             self._send(response, resp_addr)
             return
         self._terminate_call(call)
+        # RFC 3261 §15.1.2: UAS MUST generate a 2xx response to a
+        # valid BYE and pass it to the server transaction.
         response = build_response(msg, 200, "OK", to_tag=call.to_tag)
         self._send(response, resp_addr)
 
@@ -396,13 +434,14 @@ class SipServer(asyncio.DatagramProtocol):
 
         call = self._calls.get(call_id)
         if call is None:
+            # RFC 3261 §9.2: if no matching transaction is found, respond 481
             no_match = build_response(msg, 481, "Call/Transaction Does Not Exist")
             self._send(no_match, resp_addr)
             return
 
-        # RFC 3261 §9.2: CANCEL has no effect once a final response was sent.
-        # If the INVITE transaction left PROCEEDING, acknowledge the CANCEL
-        # but do NOT tear down the call or send 487.
+        # RFC 3261 §9.2: "If [the UAS] has [sent a final response], the
+        # CANCEL request has no effect on the processing of the original
+        # request." Acknowledge the CANCEL with 200 but do not tear down.
         if call.invite_branch:
             txn = self._invite_txns.get(call.invite_branch)
             if txn is not None and txn.state != TxnState.PROCEEDING:
@@ -410,13 +449,16 @@ class SipServer(asyncio.DatagramProtocol):
                 self._send(ok, resp_addr)
                 return
 
-        # INVITE still in PROCEEDING — normal CANCEL processing
+        # RFC 3261 §9.2: CANCEL matched a transaction still in PROCEEDING.
+        # First, respond 200 OK to the CANCEL itself.
         self._calls.pop(call_id, None)
         ok = build_response(msg, 200, "OK", to_tag=call.to_tag)
         self._send(ok, resp_addr)
 
-        # 487 Request Terminated for the original INVITE (before terminating
-        # the transaction so retransmission state is still alive)
+        # RFC 3261 §9.2: "If the original request was an INVITE, the UAS
+        # SHOULD immediately respond to the INVITE with a 487 (Request
+        # Terminated)." Sent before terminating the transaction so
+        # retransmission state is still alive for delivery.
         if call.invite_request is not None:
             terminated = build_response(
                 call.invite_request,
@@ -433,7 +475,11 @@ class SipServer(asyncio.DatagramProtocol):
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
-        """Respond to OPTIONS (used as keepalive by Cisco phones)."""
+        """Respond to OPTIONS (used as keepalive by Cisco phones).
+
+        RFC 3261 §11.2: response code MUST match what the UAS would return
+        for an INVITE.  Allow header SHOULD be present in the 200 OK.
+        """
         response = build_response(
             msg,
             200,
@@ -478,6 +524,8 @@ class SipServer(asyncio.DatagramProtocol):
         remote_addr = call.remote_addr
         self._calls.pop(call_id, None)
 
+        # RFC 3261 §12.2.1.1: in-dialog requests use the remote target
+        # URI as the Request-URI.
         bye_msg = build_request(
             "BYE",
             call.remote_contact,
@@ -486,11 +534,17 @@ class SipServer(asyncio.DatagramProtocol):
                     "Via",
                     f"SIP/2.0/UDP {self._server_ip}:5060;branch={generate_branch()}",
                 ),
-                # RFC 3261 §12.2.1.1: reverse From/To for in-dialog requests
+                # RFC 3261 §12.2.1.1: From URI/tag = local URI/tag,
+                # To URI/tag = remote URI/tag. Since we are the UAS that
+                # accepted the INVITE, our local tag is the To tag from
+                # the original INVITE's 200 OK.
                 ("From", f"<sip:frizzle@{self._server_ip}>;tag={call.to_tag}"),
                 ("To", f"{call.remote_from};tag={call.from_tag}"),
                 ("Call-ID", call_id),
+                # RFC 3261 §12.2.1.1: CSeq MUST be strictly monotonically
+                # increasing; method field MUST match the request method.
                 ("CSeq", "1 BYE"),
+                # RFC 3261 §8.1.1.6: Max-Forwards SHOULD start at 70
                 ("Max-Forwards", "70"),
             ],
         )
