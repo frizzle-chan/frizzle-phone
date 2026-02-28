@@ -1,7 +1,6 @@
 """Frizzle-phone SIP server entrypoint."""
 
 import asyncio
-import glob
 import logging
 import os
 import signal
@@ -10,6 +9,7 @@ import asyncpg
 from dotenv import load_dotenv
 
 from frizzle_phone.bot import create_bot
+from frizzle_phone.database import run_migrations
 from frizzle_phone.rtp.pcmu import pcm_to_ulaw
 from frizzle_phone.rtp.stream import SAMPLES_PER_PACKET
 from frizzle_phone.sip.server import get_server_ip, start_server
@@ -21,20 +21,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-async def _run_migrations(pool: asyncpg.Pool) -> None:
-    """Run all SQL migration files in order."""
-    migration_files = sorted(glob.glob("migrations/*.sql"))
-    async with pool.acquire() as conn:
-        for mf in migration_files:
-            with open(mf) as f:
-                sql = f.read().strip()
-            if sql and not all(
-                line.strip().startswith("--") or not line.strip()
-                for line in sql.splitlines()
-            ):
-                await conn.execute(sql)
 
 
 async def main() -> None:
@@ -52,7 +38,7 @@ async def main() -> None:
     # Create DB pool and run migrations
     pool = await asyncpg.create_pool(database_url)
     assert pool is not None
-    await _run_migrations(pool)
+    await run_migrations(pool)
 
     # Create Discord bot
     bot = create_bot()

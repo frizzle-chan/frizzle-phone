@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import os
 import random
 import string
@@ -13,6 +12,8 @@ from urllib.parse import urlparse
 import asyncpg
 import pytest
 import pytest_asyncio
+
+from frizzle_phone.database import run_migrations
 
 
 class FakeTransport(asyncio.DatagramTransport):
@@ -81,21 +82,14 @@ async def _test_db(_test_db_name: str) -> Any:
         await admin_conn.close()
 
     # Run migrations
-    migration_conn = await asyncpg.connect(
-        **_connect_kwargs(dsn, database=_test_db_name)
+    temp_pool = await asyncpg.create_pool(
+        **_connect_kwargs(dsn, database=_test_db_name), min_size=1, max_size=2
     )
+    assert temp_pool is not None
     try:
-        migration_files = sorted(glob.glob("migrations/*.sql"))
-        for mf in migration_files:
-            with open(mf) as f:
-                sql = f.read().strip()
-            if sql and not all(
-                line.strip().startswith("--") or not line.strip()
-                for line in sql.splitlines()
-            ):
-                await migration_conn.execute(sql)
+        await run_migrations(temp_pool)
     finally:
-        await migration_conn.close()
+        await temp_pool.close()
 
     yield _test_db_name
 
