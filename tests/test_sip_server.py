@@ -16,12 +16,13 @@ def _make_request(
     call_id: str = "test-call@10.0.0.1",
     cseq: str | None = None,
     require: str | None = None,
+    uri: str = "sip:frizzle@10.0.0.2",
 ) -> bytes:
     """Build a minimal SIP request."""
     if cseq is None:
         cseq = f"1 {method}"
     lines = [
-        f"{method} sip:frizzle@10.0.0.2 SIP/2.0",
+        f"{method} {uri} SIP/2.0",
         f"Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}",
         "From: <sip:phone@10.0.0.1>;tag=abc",
         "To: <sip:frizzle@10.0.0.2>",
@@ -40,7 +41,7 @@ def _make_invite(*, require: str | None = None, branch: str = "z9hG4bK001") -> b
 
 
 def _make_server() -> tuple[SipServer, FakeTransport]:
-    server = SipServer(server_ip="10.0.0.2", audio_buf=b"\xff" * 160)
+    server = SipServer(server_ip="10.0.0.2", audio_routes={"frizzle": b"\xff" * 160})
     transport = FakeTransport()
     server.connection_made(transport)
     return server, transport
@@ -112,3 +113,13 @@ async def test_cancel_in_proceeding_sends_487_before_terminate():
     # Call should be removed and terminated
     assert call_id not in server._calls
     assert call.terminated
+
+
+def test_unknown_extension_returns_404():
+    """INVITE for an unregistered extension returns 404 Not Found."""
+    server, transport = _make_server()
+    server.datagram_received(_make_request("INVITE", uri="sip:999@10.0.0.2"), ADDR)
+    assert len(transport.sent) == 1
+    data, _addr = transport.sent[0]
+    text = data.decode()
+    assert "404 Not Found" in text

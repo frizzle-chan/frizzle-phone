@@ -24,7 +24,7 @@ pre-commit:
 
     - name: vulture check
       glob: "*.py"
-      run: uv run vulture {staged_files} vulture_whitelist.py
+      run: uv run vulture {staged_files}
 
     - name: squawk check
       glob: "migrations/*.sql"

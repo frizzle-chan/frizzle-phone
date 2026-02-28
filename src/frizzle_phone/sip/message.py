@@ -206,6 +206,18 @@ def parse_via_params(via: str) -> dict[str, str]:
     return params
 
 
+def extract_extension(uri: str) -> str:
+    """Extract the user part from a SIP URI.
+
+    RFC 3261 §19.1.1: SIP URI = sip:user@host[:port][;params][?headers]
+    """
+    # Strip "sip:" scheme prefix
+    user_host = uri.split(":", 1)[1] if ":" in uri else uri
+    if "@" in user_host:
+        return user_host.split("@", 1)[0]
+    return user_host
+
+
 def extract_branch(msg: SipMessage) -> str | None:
     """Extract the Via branch parameter for transaction matching.
 
