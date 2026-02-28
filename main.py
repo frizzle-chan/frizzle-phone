@@ -25,7 +25,7 @@ async def main() -> None:
     # Prepend 80ms of µ-law silence so the phone's jitter buffer can fill
     # before meaningful audio begins (avoids first-call distortion)
     audio_buf = b"\xff" * (SAMPLES_PER_PACKET * 4) + audio_buf
-    transport = await start_server(
+    transport, server = await start_server(
         "0.0.0.0", 5060, server_ip=server_ip, audio_buf=audio_buf
     )
     shutdown = asyncio.Event()
@@ -35,6 +35,7 @@ async def main() -> None:
         await shutdown.wait()
         logger.info("Shutting down...")
     finally:
+        server.graceful_shutdown()
         transport.close()
 
 

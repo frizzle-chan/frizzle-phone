@@ -145,7 +145,6 @@ async def sip_endpoint():
         0,
         server_ip="127.0.0.1",
         audio_buf=b"\x7f" * 160,
-        rtp_port=0,
     )
     _, port = transport.get_extra_info("sockname")
     yield transport, server, port

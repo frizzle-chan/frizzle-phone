@@ -109,6 +109,7 @@ class Call:
     remote_contact: str
     remote_from: str
     remote_rtp_addr: tuple[str, int]
+    rtp_port: int = 0
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
     invite_branch: str | None = None
@@ -128,16 +129,13 @@ def get_server_ip() -> str:
 class SipServer(asyncio.DatagramProtocol):
     """SIP server handling REGISTER, INVITE, ACK, BYE, and CANCEL."""
 
-    def __init__(
-        self, *, server_ip: str, audio_buf: bytes, rtp_port: int = 10000
-    ) -> None:
+    def __init__(self, *, server_ip: str, audio_buf: bytes) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
         self._invite_txns: dict[str, InviteServerTxn] = {}
         self._rtp_tasks: set[asyncio.Task[None]] = set()
         self._server_ip = server_ip
         self._audio_buf = audio_buf
-        self._rtp_port = rtp_port
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -342,6 +340,7 @@ class SipServer(asyncio.DatagramProtocol):
         if existing is not None:
             self._terminate_call(existing)
 
+        rtp_port = self._reserve_rtp_port()
         call = Call(
             call_id=call_id,
             from_tag=from_tag,
@@ -350,6 +349,7 @@ class SipServer(asyncio.DatagramProtocol):
             remote_contact=remote_contact,
             remote_from=remote_from,
             remote_rtp_addr=remote_rtp_addr,
+            rtp_port=rtp_port,
             invite_request=msg,
         )
         self._calls[call_id] = call
@@ -367,7 +367,7 @@ class SipServer(asyncio.DatagramProtocol):
             msg,
             200,
             "OK",
-            body=build_sdp_answer(self._server_ip, self._rtp_port),
+            body=build_sdp_answer(self._server_ip, rtp_port),
             to_tag=to_tag,
             extra_headers=[
                 ("Contact", f"<sip:frizzle@{self._server_ip}:5060>"),
@@ -499,6 +499,15 @@ class SipServer(asyncio.DatagramProtocol):
         response = build_response(msg, 200, "OK", to_tag=generate_tag())
         self._send(response, resp_addr)
 
+    @staticmethod
+    def _reserve_rtp_port() -> int:
+        """Bind a UDP socket to get an OS-assigned port, then release it."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
+
     def _start_rtp_for_call(self, call: Call) -> None:
         """Create an RTP stream for the call and schedule BYE on completion."""
         loop = asyncio.get_running_loop()
@@ -506,7 +515,7 @@ class SipServer(asyncio.DatagramProtocol):
             loop=loop,
             remote_addr=call.remote_rtp_addr,
             audio_buf=self._audio_buf,
-            local_port=self._rtp_port,
+            local_port=call.rtp_port,
         )
         task = loop.create_task(call.rtp_stream.start())
         task.add_done_callback(lambda _f: loop.call_soon(self._send_bye, call))
@@ -586,10 +595,9 @@ async def start_server(
     *,
     server_ip: str,
     audio_buf: bytes,
-    rtp_port: int = 10000,
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(server_ip=server_ip, audio_buf=audio_buf, rtp_port=rtp_port)
+    server = SipServer(server_ip=server_ip, audio_buf=audio_buf)
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )
