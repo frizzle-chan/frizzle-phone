@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import signal
+from pathlib import Path
 
 import asyncpg
 from dotenv import load_dotenv
@@ -85,6 +86,9 @@ async def main() -> None:
         bot_task.cancel()
         await pool.close()
 
+
+PID_FILE = Path("frizzle-phone.pid")
+PID_FILE.write_text(str(os.getpid()))
 
 if __name__ == "__main__":
     asyncio.run(main())
