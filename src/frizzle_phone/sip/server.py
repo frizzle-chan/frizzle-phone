@@ -14,6 +14,7 @@ from frizzle_phone.sip.message import (
     build_request,
     build_response,
     extract_branch,
+    extract_extension,
     generate_branch,
     generate_tag,
     parse_message,
@@ -109,6 +110,7 @@ class Call:
     remote_contact: str
     remote_from: str
     remote_rtp_addr: tuple[str, int]
+    audio_buf: bytes
     rtp_port: int = 0
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
@@ -129,13 +131,13 @@ def get_server_ip() -> str:
 class SipServer(asyncio.DatagramProtocol):
     """SIP server handling REGISTER, INVITE, ACK, BYE, and CANCEL."""
 
-    def __init__(self, *, server_ip: str, audio_buf: bytes) -> None:
+    def __init__(self, *, server_ip: str, audio_routes: dict[str, bytes]) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
         self._invite_txns: dict[str, InviteServerTxn] = {}
         self._rtp_tasks: set[asyncio.Task[None]] = set()
         self._server_ip = server_ip
-        self._audio_buf = audio_buf
+        self._audio_routes = audio_routes
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -327,6 +329,18 @@ class SipServer(asyncio.DatagramProtocol):
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
+        # RFC 3261 §8.2.2.1: if the Request-URI does not identify an
+        # address the UAS is willing to accept requests for, respond 404.
+        extension = extract_extension(msg.uri)
+        audio_buf = self._audio_routes.get(extension)
+        if audio_buf is None:
+            logger.info("Unknown extension %r → 404", extension)
+            self._send(
+                build_response(msg, 404, "Not Found", to_tag=generate_tag()),
+                resp_addr,
+            )
+            return
+
         call_id, from_tag, remote_rtp_addr, remote_contact, remote_from = (
             self._parse_invite_params(msg, addr)
         )
@@ -349,6 +363,7 @@ class SipServer(asyncio.DatagramProtocol):
             remote_contact=remote_contact,
             remote_from=remote_from,
             remote_rtp_addr=remote_rtp_addr,
+            audio_buf=audio_buf,
             rtp_port=rtp_port,
             invite_request=msg,
         )
@@ -514,7 +529,7 @@ class SipServer(asyncio.DatagramProtocol):
         call.rtp_stream = RtpStream(
             loop=loop,
             remote_addr=call.remote_rtp_addr,
-            audio_buf=self._audio_buf,
+            audio_buf=call.audio_buf,
             local_port=call.rtp_port,
         )
         task = loop.create_task(call.rtp_stream.start())
@@ -594,10 +609,10 @@ async def start_server(
     port: int = 5060,
     *,
     server_ip: str,
-    audio_buf: bytes,
+    audio_routes: dict[str, bytes],
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(server_ip=server_ip, audio_buf=audio_buf)
+    server = SipServer(server_ip=server_ip, audio_routes=audio_routes)
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )

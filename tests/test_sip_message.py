@@ -1,4 +1,9 @@
-from frizzle_phone.sip.message import build_request, build_response, parse_message
+from frizzle_phone.sip.message import (
+    build_request,
+    build_response,
+    extract_extension,
+    parse_message,
+)
 
 
 def _make_register() -> bytes:
@@ -235,6 +240,18 @@ def test_build_request_custom_content_type():
     text = data.decode()
     assert "Content-Type: text/plain" in text
     assert "application/sdp" not in text
+
+
+def test_extract_extension_basic():
+    assert extract_extension("sip:111@10.0.0.2") == "111"
+
+
+def test_extract_extension_with_port():
+    assert extract_extension("sip:frizzle@10.0.0.2:5060") == "frizzle"
+
+
+def test_extract_extension_no_user():
+    assert extract_extension("sip:10.0.0.2") == "10.0.0.2"
 
 
 def test_build_request_no_body():

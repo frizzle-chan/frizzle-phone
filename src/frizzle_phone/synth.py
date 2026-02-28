@@ -143,6 +143,39 @@ def reese_note(freq: float, duration_s: float) -> list[float]:
     return out
 
 
+def generate_beeps_pcm(
+    freq: float = 880.0,
+    beep_s: float = 0.2,
+    gap_s: float = 0.2,
+    count: int = 3,
+) -> list[float]:
+    """Generate a series of sine-wave beeps with gaps.
+
+    Returns float PCM samples at SAMPLE_RATE. Uses a 5ms raised-cosine
+    envelope at the edges of each beep to avoid clicks.
+    """
+    beep_n = int(SAMPLE_RATE * beep_s)
+    gap_n = int(SAMPLE_RATE * gap_s)
+    fade_n = int(SAMPLE_RATE * 0.005)  # 5ms fade
+
+    out: list[float] = []
+    for i in range(count):
+        for j in range(beep_n):
+            t = j / SAMPLE_RATE
+            # Raised-cosine fade in/out
+            if j < fade_n:
+                env = 0.5 * (1.0 - math.cos(math.pi * j / fade_n))
+            elif j > beep_n - fade_n:
+                env = 0.5 * (1.0 - math.cos(math.pi * (beep_n - j) / fade_n))
+            else:
+                env = 1.0
+            out.append(env * math.sin(2.0 * math.pi * freq * t))
+        # Add gap after each beep (except the last)
+        if i < count - 1:
+            out.extend([0.0] * gap_n)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Mixing helpers
 # ---------------------------------------------------------------------------

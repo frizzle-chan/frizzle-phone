@@ -2,6 +2,7 @@ from frizzle_phone.synth import (
     SAMPLE_RATE,
     _saw,
     generate_bass_pattern,
+    generate_beeps_pcm,
     generate_rhythm_pcm,
     hihat,
     kick,
@@ -68,6 +69,28 @@ def test_generate_bass_pattern_length():
 def test_generate_rhythm_pcm_length():
     pcm = generate_rhythm_pcm(1.0)
     assert len(pcm) == SAMPLE_RATE
+
+
+def test_generate_beeps_pcm_length():
+    samples = generate_beeps_pcm()
+    # 3 beeps × 200ms + 2 gaps × 200ms = 1000ms
+    expected = int(SAMPLE_RATE * 0.2) * 3 + int(SAMPLE_RATE * 0.2) * 2
+    assert len(samples) == expected
+
+
+def test_generate_beeps_pcm_has_silence_gaps():
+    samples = generate_beeps_pcm()
+    beep_n = int(SAMPLE_RATE * 0.2)
+    gap_n = int(SAMPLE_RATE * 0.2)
+    # Middle of first gap should be silent
+    gap_start = beep_n
+    mid_gap = gap_start + gap_n // 2
+    assert samples[mid_gap] == 0.0
+
+
+def test_generate_beeps_pcm_range():
+    samples = generate_beeps_pcm()
+    assert all(-1.1 <= s <= 1.1 for s in samples)
 
 
 def test_generate_rhythm_pcm_not_silent():

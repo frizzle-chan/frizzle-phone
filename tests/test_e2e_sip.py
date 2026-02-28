@@ -144,7 +144,7 @@ async def sip_endpoint():
         "127.0.0.1",
         0,
         server_ip="127.0.0.1",
-        audio_buf=b"\x7f" * 160,
+        audio_routes={"frizzle": b"\x7f" * 160},
     )
     _, port = transport.get_extra_info("sockname")
     yield transport, server, port
@@ -426,6 +426,29 @@ async def test_duplicate_ack_ignored(sip_client):
     # No second BYE should arrive
     with pytest.raises(TimeoutError):
         await _recv(queue, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_invite_unknown_extension_returns_404(sip_client):
+    """INVITE for an unknown extension returns 404 Not Found."""
+    transport, queue, server_port, client_port = sip_client
+    # Build an INVITE with an unknown extension in the Request-URI
+    lines = [
+        f"INVITE sip:999@127.0.0.1:{server_port} SIP/2.0",
+        f"Via: SIP/2.0/UDP 127.0.0.1:{client_port};branch=z9hG4bK404",
+        "From: <sip:test@127.0.0.1>;tag=fromtag1",
+        "To: <sip:999@127.0.0.1>",
+        "Call-ID: e2e-404-test",
+        "CSeq: 1 INVITE",
+        f"Contact: <sip:test@127.0.0.1:{client_port}>",
+        "Max-Forwards: 70",
+        "Content-Length: 0",
+        "",
+        "",
+    ]
+    transport.sendto("\r\n".join(lines).encode())
+    resp = parse_message(await _recv(queue))
+    assert resp.uri == "404"
 
 
 @pytest.mark.asyncio
