@@ -13,6 +13,17 @@ Discord bot using discord.py with asyncpg/PostgreSQL for persistence.
 
 Package manager: **uv** (not pip). Always use `uv run` to execute tools.
 
+### Devcontainer
+
+The project uses a devcontainer with PostgreSQL. The justfile auto-detects whether you're inside the devcontainer or on the host:
+
+- **Inside devcontainer**: commands run directly
+- **On the host**: commands are wrapped with `devcontainer exec --workspace-folder .`
+
+To start the devcontainer: `just up` (or `devcontainer up --workspace-folder .`)
+
+Tests require the devcontainer's PostgreSQL (`DATABASE_URL` is set automatically inside the container). If running from the host, `just test` handles the exec automatically.
+
 ### Running the Server
 
 Always use `./dev` to launch the server (Docker-based, uses `--network host`).
@@ -29,6 +40,7 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 - `just vulture` - dead code check
 - `just resetdb` - drop and recreate dev database schema
 - `just squawk` - lint SQL migrations
+- `just up` - start the devcontainer
 
 ### CI Checks (all must pass)
 

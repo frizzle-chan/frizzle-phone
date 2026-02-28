@@ -44,4 +44,9 @@ pre-commit:
         - ".vscode/**"
         - "lefthook.yml"
         - ".squawk.toml"
-      run: uv run pytest
+      run: |
+        if [ -f /.dockerenv ]; then
+          uv run pytest
+        else
+          devcontainer exec --workspace-folder . uv run pytest
+        fi

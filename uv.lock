@@ -284,6 +284,7 @@ name = "frizzle-phone"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "discord-py" },
     { name = "python-dotenv" },
@@ -303,6 +304,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.11" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "discord-py", specifier = ">=2.6.4" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
