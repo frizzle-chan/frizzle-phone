@@ -42,7 +42,7 @@ async def main() -> None:
     discord_token = os.environ.get("DISCORD_TOKEN", "")
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql://frizzle_phone:frizzle_phone@localhost:5432/frizzle_phone",
+        "postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone",
     )
 
     loop = asyncio.get_running_loop()

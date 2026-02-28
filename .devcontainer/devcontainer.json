@@ -5,7 +5,7 @@
     "remoteUser": "frizzle_phone",
     "containerEnv": {
         "CLAUDE_CONFIG_DIR": "${containerWorkspaceFolder}/.claude-user",
-        "DATABASE_URL": "postgresql://frizzle_phone:frizzle_phone@db:5432/frizzle_phone"
+        "DATABASE_URL": "postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone"
     },
     "customizations": {
         "vscode": {

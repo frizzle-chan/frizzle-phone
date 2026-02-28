@@ -32,12 +32,16 @@ vulture:
 up:
     devcontainer up --workspace-folder .
 
+# Stop the devcontainer (host only)
+down:
+    docker compose -f .devcontainer/docker-compose.yml down
+
 devcontainer:
     gh auth login --with-token < .github-token.txt
 
 # Reset dev database (drops and recreates schema, runs migrations)
 resetdb:
-    {{_run}} psql postgresql://frizzle_phone:frizzle_phone@db:5432/frizzle_phone -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+    {{_run}} psql postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
 migratedb:
     echo TODO

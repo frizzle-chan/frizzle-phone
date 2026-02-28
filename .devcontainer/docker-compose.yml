@@ -6,10 +6,11 @@ services:
       dockerfile: Dockerfile
       target: devcontainer
     command: sleep infinity
+    network_mode: host
     volumes:
       - ..:/app:cached
     environment:
-      - DATABASE_URL=postgresql://frizzle_phone:frizzle_phone@db:5432/frizzle_phone
+      - DATABASE_URL=postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone
 
   db:
     image: docker.io/library/postgres:18.1
@@ -26,7 +27,7 @@ services:
       timeout: 5s
       retries: 5
     ports:
-      - "5432"
+      - "15432:5432"
 
 volumes:
   postgres-data:

@@ -32,7 +32,7 @@ class FakeTransport(asyncio.DatagramTransport):
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DB_URL = (
-    "postgresql://frizzle_phone:frizzle_phone@localhost:5432/frizzle_phone"
+    "postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone"
 )
 
 
