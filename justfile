@@ -1,7 +1,7 @@
 # Run commands inside devcontainer automatically when on host
 _run := if path_exists("/.dockerenv") == "true" { "" } else { "devcontainer exec --workspace-folder ." }
 
-default: lint format types squawk vulture
+default: lint format types squawk vulture test
 
 test:
     {{_run}} uv run pytest
