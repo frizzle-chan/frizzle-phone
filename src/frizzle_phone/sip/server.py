@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 import asyncpg
 import discord
-from discord.ext import commands
+from discord.ext import commands, voice_recv
 
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
@@ -122,7 +122,7 @@ class Call:
     terminated: bool = False
     db_call_id: str | None = None
     # Discord voice bridge state
-    voice_client: discord.VoiceClient | None = None
+    voice_client: voice_recv.VoiceRecvClient | None = None
     guild_id: int | None = None
     channel_id: int | None = None
     bridge_stop_event: asyncio.Event | None = None
@@ -256,6 +256,17 @@ class SipServer(asyncio.DatagramProtocol):
         call.terminated = True
         if call.rtp_stream is not None:
             call.rtp_stream.stop()
+        if call.voice_client is not None:
+            # Stop bridge components
+            if call.bridge_stop_event is not None:
+                call.bridge_stop_event.set()
+            if call.bridge_send_task is not None:
+                call.bridge_send_task.cancel()
+            if call.bridge_rtp_transport is not None:
+                call.bridge_rtp_transport.close()
+            call.voice_client.stop()
+            asyncio.ensure_future(call.voice_client.disconnect())
+            call.voice_client = None
         if call.invite_branch:
             txn = self._invite_txns.pop(call.invite_branch, None)
             if txn is not None:
@@ -470,8 +481,6 @@ class SipServer(asyncio.DatagramProtocol):
 
         # Discord extension: join voice channel before sending 200 OK
         if guild_id is not None:
-            from discord.ext import voice_recv  # noqa: E402
-
             assert channel_id is not None
             guild = self._bot.get_guild(guild_id)
             if guild is None:
@@ -545,12 +554,19 @@ class SipServer(asyncio.DatagramProtocol):
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
 
-        if call.rtp_stream is None:
+        # Guard against duplicate ACKs
+        if call.rtp_stream is not None or call.bridge_stop_event is not None:
+            return
+
+        if call.voice_client is not None:
+            # Discord call → start bridge
+            asyncio.ensure_future(self._start_discord_bridge(call))
+        elif call.audio_buf is not None:
+            # Audio call → existing playback path
             self._start_rtp_for_call(call)
-            if call.db_call_id:
-                asyncio.ensure_future(
-                    self._update_call_status(call.db_call_id, "active")
-                )
+
+        if call.db_call_id:
+            asyncio.ensure_future(self._update_call_status(call.db_call_id, "active"))
 
     def _handle_bye(
         self,
@@ -661,6 +677,55 @@ class SipServer(asyncio.DatagramProtocol):
         port = sock.getsockname()[1]
         sock.close()
         return port
+
+    async def _start_discord_bridge(self, call: Call) -> None:
+        """Set up bidirectional audio bridge for a discord call."""
+        import queue as queue_mod
+
+        from frizzle_phone.bridge import (
+            PhoneAudioSink,
+            PhoneAudioSource,
+            rtp_send_loop,
+        )
+        from frizzle_phone.rtp.receive import RtpReceiveProtocol
+
+        assert call.voice_client is not None
+        loop = asyncio.get_running_loop()
+
+        phone_q: queue_mod.Queue[bytes] = queue_mod.Queue(maxsize=50)
+        discord_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+
+        # Bind RTP receive on the port we advertised in SDP
+        rtp_transport, _ = await loop.create_datagram_endpoint(
+            lambda: RtpReceiveProtocol(phone_q),
+            local_addr=("0.0.0.0", call.rtp_port),
+        )
+
+        # Phone → Discord
+        source = PhoneAudioSource(phone_q)
+        call.voice_client.play(source)
+
+        # Discord → Phone
+        sink = PhoneAudioSink(discord_q)
+        call.voice_client.listen(sink)
+
+        # RTP send loop
+        stop_event = asyncio.Event()
+        send_task = loop.create_task(
+            rtp_send_loop(
+                discord_q,
+                rtp_transport,
+                call.remote_rtp_addr,
+                stop_event=stop_event,
+            )
+        )
+        self._rtp_tasks.add(send_task)
+        send_task.add_done_callback(self._rtp_tasks.discard)
+
+        # Store for cleanup
+        call.bridge_stop_event = stop_event
+        call.bridge_send_task = send_task
+        call.bridge_rtp_transport = rtp_transport
 
     def _start_rtp_for_call(self, call: Call) -> None:
         """Create an RTP stream for the call and schedule BYE on completion."""
