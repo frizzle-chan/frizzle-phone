@@ -9,6 +9,8 @@ import socket
 from collections.abc import Callable
 
 import asyncpg
+import discord
+from discord.ext import commands
 
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
@@ -112,13 +114,20 @@ class Call:
     remote_contact: str
     remote_from: str
     remote_rtp_addr: tuple[str, int]
-    audio_buf: bytes
+    audio_buf: bytes | None = None
     rtp_port: int = 0
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
     invite_branch: str | None = None
     terminated: bool = False
     db_call_id: str | None = None
+    # Discord voice bridge state
+    voice_client: discord.VoiceClient | None = None
+    guild_id: int | None = None
+    channel_id: int | None = None
+    bridge_stop_event: asyncio.Event | None = None
+    bridge_send_task: asyncio.Task[None] | None = None
+    bridge_rtp_transport: asyncio.DatagramTransport | None = None
 
 
 def get_server_ip() -> str:
@@ -140,6 +149,7 @@ class SipServer(asyncio.DatagramProtocol):
         server_ip: str,
         pool: asyncpg.Pool,
         audio_buffers: dict[str, bytes],
+        bot: commands.Bot,
     ) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
@@ -148,6 +158,7 @@ class SipServer(asyncio.DatagramProtocol):
         self._server_ip = server_ip
         self._pool = pool
         self._audio_buffers = audio_buffers
+        self._bot = bot
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -617,6 +628,8 @@ class SipServer(asyncio.DatagramProtocol):
 
     def _start_rtp_for_call(self, call: Call) -> None:
         """Create an RTP stream for the call and schedule BYE on completion."""
+        if call.audio_buf is None:
+            return
         loop = asyncio.get_running_loop()
         call.rtp_stream = RtpStream(
             loop=loop,
@@ -725,9 +738,12 @@ async def start_server(
     server_ip: str,
     pool: asyncpg.Pool,
     audio_buffers: dict[str, bytes],
+    bot: commands.Bot,
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(server_ip=server_ip, pool=pool, audio_buffers=audio_buffers)
+    server = SipServer(
+        server_ip=server_ip, pool=pool, audio_buffers=audio_buffers, bot=bot
+    )
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )

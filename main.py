@@ -67,8 +67,15 @@ async def main() -> None:
 
     # Start SIP server
     transport, server = await start_server(
-        "0.0.0.0", 5060, server_ip=server_ip, pool=pool, audio_buffers=audio_buffers
+        "0.0.0.0",
+        5060,
+        server_ip=server_ip,
+        pool=pool,
+        audio_buffers=audio_buffers,
+        bot=bot,
     )
+    # Store server ref on bot for on_voice_state_update handler
+    bot.sip_server = server  # type: ignore[attr-defined]
 
     # Start webapp
     app = create_app(pool, bot, list(audio_buffers.keys()))

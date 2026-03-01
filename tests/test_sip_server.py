@@ -1,6 +1,7 @@
 """Tests for SIP server request handling."""
 
 import asyncio
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -53,6 +54,7 @@ def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
         server_ip="10.0.0.2",
         pool=pool,
         audio_buffers={"techno": b"\xff" * 160},
+        bot=MagicMock(),
     )
     transport = FakeTransport()
     server.connection_made(transport)
