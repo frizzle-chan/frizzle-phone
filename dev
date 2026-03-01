@@ -1,17 +1,18 @@
 #!/bin/bash
 set -e
 
-CONTAINER=frizzle-phone-dev
+CONTAINER="frizzle-phone_devcontainer-app-1"
 
-docker rm -f "$CONTAINER" 2>/dev/null || true
+# Kill existing dev server via pid file (try both host and container)
+if [ -f frizzle-phone.pid ]; then
+    pid=$(cat frizzle-phone.pid)
+    kill "$pid" 2>/dev/null || true
+    docker exec "$CONTAINER" kill "$pid" 2>/dev/null || true
+fi
 
-docker build -t "$CONTAINER" --target production .
-
-ENV_ARGS=()
-[[ -f .env ]] && ENV_ARGS=(--env-file .env)
-
-docker run --rm --name "$CONTAINER" \
-    --network host \
-    "${ENV_ARGS[@]}" \
-    "$CONTAINER" \
-    2>&1 | tee frizzle-phone.log
+if [ -f /.dockerenv ]; then
+    exec > >(tee frizzle-phone.log) 2>&1
+    exec uv run python main.py
+else
+    devcontainer exec --workspace-folder . uv run python main.py 2>&1 | tee frizzle-phone.log
+fi

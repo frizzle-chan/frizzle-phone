@@ -1,5 +1,8 @@
 """Tests for SIP server request handling."""
 
+import asyncio
+
+import asyncpg
 import pytest
 
 from frizzle_phone.sip.message import parse_message
@@ -7,6 +10,11 @@ from frizzle_phone.sip.server import SipServer
 from frizzle_phone.sip.transaction import TxnState
 
 from .conftest import FakeTransport
+
+
+async def _drain() -> None:
+    """Yield enough event loop time for ensure_future DB tasks to complete."""
+    await asyncio.sleep(0.05)
 
 
 def _make_request(
@@ -40,8 +48,12 @@ def _make_invite(*, require: str | None = None, branch: str = "z9hG4bK001") -> b
     return _make_request("INVITE", branch=branch, require=require)
 
 
-def _make_server() -> tuple[SipServer, FakeTransport]:
-    server = SipServer(server_ip="10.0.0.2", audio_routes={"frizzle": b"\xff" * 160})
+def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
+    server = SipServer(
+        server_ip="10.0.0.2",
+        pool=pool,
+        audio_buffers={"techno": b"\xff" * 160},
+    )
     transport = FakeTransport()
     server.connection_made(transport)
     return server, transport
@@ -50,9 +62,9 @@ def _make_server() -> tuple[SipServer, FakeTransport]:
 ADDR = ("10.0.0.1", 5060)
 
 
-def test_require_header_returns_420():
+def test_require_header_returns_420(pool):
     """Require header with unsupported option triggers 420 Bad Extension."""
-    server, transport = _make_server()
+    server, transport = _make_server(pool)
     server.datagram_received(_make_invite(require="100rel"), ADDR)
     # Should get a single 420 response (no 100 Trying, no 200 OK)
     assert len(transport.sent) == 1
@@ -63,10 +75,11 @@ def test_require_header_returns_420():
 
 
 @pytest.mark.asyncio
-async def test_no_require_header_proceeds_normally():
+async def test_no_require_header_proceeds_normally(seeded_pool):
     """Without Require header, INVITE is processed normally."""
-    server, transport = _make_server()
+    server, transport = _make_server(seeded_pool)
     server.datagram_received(_make_invite(), ADDR)
+    await _drain()
     # Should get 100 Trying + 200 OK
     assert len(transport.sent) >= 2
     responses = [d.decode() for d, _a in transport.sent]
@@ -78,15 +91,16 @@ async def test_no_require_header_proceeds_normally():
 
 
 @pytest.mark.asyncio
-async def test_cancel_in_proceeding_sends_487_before_terminate():
+async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_pool):
     """CANCEL while INVITE txn is in PROCEEDING sends 200 + 487 and terminates."""
-    server, transport = _make_server()
+    server, transport = _make_server(seeded_pool)
     call_id = "cancel-proceeding@test"
 
     # Send INVITE — creates call and txn (100 Trying + 200 OK)
     server.datagram_received(
         _make_request("INVITE", branch="z9hG4bKinv1", call_id=call_id), ADDR
     )
+    await _drain()
     assert call_id in server._calls
     call = server._calls[call_id]
 
@@ -115,10 +129,12 @@ async def test_cancel_in_proceeding_sends_487_before_terminate():
     assert call.terminated
 
 
-def test_unknown_extension_returns_404():
+@pytest.mark.asyncio
+async def test_unknown_extension_returns_404(pool):
     """INVITE for an unregistered extension returns 404 Not Found."""
-    server, transport = _make_server()
+    server, transport = _make_server(pool)
     server.datagram_received(_make_request("INVITE", uri="sip:999@10.0.0.2"), ADDR)
+    await _drain()
     assert len(transport.sent) == 1
     data, _addr = transport.sent[0]
     text = data.decode()

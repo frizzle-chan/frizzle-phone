@@ -1,36 +1,47 @@
-default: lint format types squawk vulture
+# Run commands inside devcontainer automatically when on host
+_run := if path_exists("/.dockerenv") == "true" { "" } else { "devcontainer exec --workspace-folder ." }
+
+default: lint format types squawk vulture test
 
 test:
-    uv run pytest
+    {{_run}} uv run pytest
 
 testq:
-    uv run pytest -qx --tb=line
+    {{_run}} uv run pytest -qx --tb=line
 
 # Run tests and generate HTML coverage report in htmlcov/
 coverage:
-    uv run pytest --cov-report=html
+    {{_run}} uv run pytest --cov-report=html
 
 lint:
-    uv run ruff check .
+    {{_run}} uv run ruff check .
 
 format:
-    uv run ruff format .
+    {{_run}} uv run ruff format .
 
 types:
-    uv run ty check
+    {{_run}} uv run ty check
 
 squawk:
-    uv run squawk migrations/*.sql
+    {{_run}} uv run squawk migrations/*.sql
 
 vulture:
-    uv run vulture
+    {{_run}} uv run vulture
+
+# Start the devcontainer (host only)
+up:
+    devcontainer up --workspace-folder .
+
+# Stop the devcontainer (host only)
+down:
+    docker compose -f .devcontainer/docker-compose.yml down
 
 devcontainer:
     gh auth login --with-token < .github-token.txt
 
 # Reset dev database (drops and recreates schema, runs migrations)
 resetdb:
-    psql postgresql://frizzle_phone:frizzle_phone@db:5432/frizzle_phone -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+    {{_run}} psql postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
 migratedb:
     echo TODO

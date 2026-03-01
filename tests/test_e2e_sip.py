@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
@@ -138,13 +139,14 @@ def _build_bye(
 
 
 @pytest_asyncio.fixture
-async def sip_endpoint():
+async def sip_endpoint(seeded_pool: asyncpg.Pool):
     """Start a SipServer on an OS-assigned port with a 1-packet audio buffer."""
     transport, server = await start_server(
         "127.0.0.1",
         0,
         server_ip="127.0.0.1",
-        audio_routes={"frizzle": b"\x7f" * 160},
+        pool=seeded_pool,
+        audio_buffers={"techno": b"\x7f" * 160},
     )
     _, port = transport.get_extra_info("sockname")
     yield transport, server, port

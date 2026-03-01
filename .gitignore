@@ -198,5 +198,4 @@ img-dist/
 *.local.md
 
 # Dev server PID file
-phone.pid
-phone.log
+frizzle-phone.pid
