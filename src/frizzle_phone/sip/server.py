@@ -8,6 +8,8 @@ import logging
 import socket
 from collections.abc import Callable
 
+import asyncpg
+
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
     SipMessage,
@@ -116,6 +118,7 @@ class Call:
     invite_request: SipMessage | None = None
     invite_branch: str | None = None
     terminated: bool = False
+    db_call_id: str | None = None
 
 
 def get_server_ip() -> str:
@@ -131,13 +134,20 @@ def get_server_ip() -> str:
 class SipServer(asyncio.DatagramProtocol):
     """SIP server handling REGISTER, INVITE, ACK, BYE, and CANCEL."""
 
-    def __init__(self, *, server_ip: str, audio_routes: dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        *,
+        server_ip: str,
+        pool: asyncpg.Pool,
+        audio_buffers: dict[str, bytes],
+    ) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
         self._invite_txns: dict[str, InviteServerTxn] = {}
         self._rtp_tasks: set[asyncio.Task[None]] = set()
         self._server_ip = server_ip
-        self._audio_routes = audio_routes
+        self._pool = pool
+        self._audio_buffers = audio_buffers
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -329,15 +339,74 @@ class SipServer(asyncio.DatagramProtocol):
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
+        asyncio.ensure_future(self._handle_invite_async(msg, addr, resp_addr))
+
+    async def _handle_invite_async(
+        self,
+        msg: SipMessage,
+        addr: tuple[str, int],
+        resp_addr: tuple[str, int],
+    ) -> None:
         # RFC 3261 §8.2.2.1: if the Request-URI does not identify an
         # address the UAS is willing to accept requests for, respond 404.
         extension = extract_extension(msg.uri)
-        audio_buf = self._audio_routes.get(extension)
+        caller_addr = f"{addr[0]}:{addr[1]}"
+
+        audio_buf: bytes | None = None
+        guild_id: int | None = None
+        channel_id: int | None = None
+
+        # Check discord_extensions first
+        row = await self._pool.fetchrow(
+            "SELECT guild_id, channel_id FROM discord_extensions WHERE extension = $1",
+            extension,
+        )
+        if row is not None:
+            guild_id = row["guild_id"]
+            channel_id = row["channel_id"]
+            # Discord extensions use the first available audio buffer
+            audio_buf = next(iter(self._audio_buffers.values()), None)
+
+            # App-layer check: one active discord call per phone
+            existing_call = await self._pool.fetchrow(
+                "SELECT id FROM calls WHERE caller_addr = $1"
+                " AND status IN ('ringing', 'active') AND guild_id IS NOT NULL",
+                caller_addr,
+            )
+            if existing_call is not None:
+                logger.info(
+                    "Caller %s already has an active discord call → 486", caller_addr
+                )
+                self._send(
+                    build_response(msg, 486, "Busy Here", to_tag=generate_tag()),
+                    resp_addr,
+                )
+                return
+        else:
+            # Check audio_extensions
+            audio_row = await self._pool.fetchrow(
+                "SELECT audio_name FROM audio_extensions WHERE extension = $1",
+                extension,
+            )
+            if audio_row is not None:
+                audio_buf = self._audio_buffers.get(audio_row["audio_name"])
+
         if audio_buf is None:
             logger.info("Unknown extension %r → 404", extension)
             self._send(
                 build_response(msg, 404, "Not Found", to_tag=generate_tag()),
                 resp_addr,
+            )
+            # Log failed call
+            await self._pool.execute(
+                "INSERT INTO calls (sip_call_id, extension, caller_addr, status,"
+                " guild_id, channel_id)"
+                " VALUES ($1, $2, $3, 'failed', $4, $5)",
+                msg.header("Call-ID") or "",
+                extension,
+                caller_addr,
+                guild_id,
+                channel_id,
             )
             return
 
@@ -354,6 +423,18 @@ class SipServer(asyncio.DatagramProtocol):
         if existing is not None:
             self._terminate_call(existing)
 
+        # Log call to DB
+        db_call_id = await self._pool.fetchval(
+            "INSERT INTO calls (sip_call_id, extension, caller_addr, status,"
+            " guild_id, channel_id)"
+            " VALUES ($1, $2, $3, 'ringing', $4, $5) RETURNING id",
+            call_id,
+            extension,
+            caller_addr,
+            guild_id,
+            channel_id,
+        )
+
         rtp_port = self._reserve_rtp_port()
         call = Call(
             call_id=call_id,
@@ -366,6 +447,7 @@ class SipServer(asyncio.DatagramProtocol):
             audio_buf=audio_buf,
             rtp_port=rtp_port,
             invite_request=msg,
+            db_call_id=str(db_call_id) if db_call_id else None,
         )
         self._calls[call_id] = call
 
@@ -418,6 +500,10 @@ class SipServer(asyncio.DatagramProtocol):
 
         if call.rtp_stream is None:
             self._start_rtp_for_call(call)
+            if call.db_call_id:
+                asyncio.ensure_future(
+                    self._update_call_status(call.db_call_id, "active")
+                )
 
     def _handle_bye(
         self,
@@ -434,6 +520,10 @@ class SipServer(asyncio.DatagramProtocol):
             self._send(response, resp_addr)
             return
         self._terminate_call(call)
+        if call.db_call_id:
+            asyncio.ensure_future(
+                self._update_call_status(call.db_call_id, "completed")
+            )
         # RFC 3261 §15.1.2: UAS MUST generate a 2xx response to a
         # valid BYE and pass it to the server transaction.
         response = build_response(msg, 200, "OK", to_tag=call.to_tag)
@@ -483,6 +573,8 @@ class SipServer(asyncio.DatagramProtocol):
             )
             self._send(terminated, resp_addr)
         self._terminate_call(call)
+        if call.db_call_id:
+            asyncio.ensure_future(self._update_call_status(call.db_call_id, "failed"))
 
     def _handle_options(
         self,
@@ -543,6 +635,10 @@ class SipServer(asyncio.DatagramProtocol):
         if call.terminated:
             return
         self._terminate_call(call)
+        if call.db_call_id:
+            asyncio.ensure_future(
+                self._update_call_status(call.db_call_id, "completed")
+            )
 
         call_id = call.call_id
         remote_addr = call.remote_addr
@@ -574,6 +670,24 @@ class SipServer(asyncio.DatagramProtocol):
         )
         self._send(bye_msg, remote_addr)
         logger.info("Sent BYE for call %s", call_id)
+
+    async def _update_call_status(self, db_call_id: str, status: str) -> None:
+        """Update a call's status in the database."""
+        try:
+            if status == "active":
+                await self._pool.execute(
+                    "UPDATE calls SET status = $1, answered_at = now() WHERE id = $2",
+                    status,
+                    db_call_id,
+                )
+            elif status in ("completed", "failed"):
+                await self._pool.execute(
+                    "UPDATE calls SET status = $1, ended_at = now() WHERE id = $2",
+                    status,
+                    db_call_id,
+                )
+        except Exception:
+            logger.exception("Failed to update call %s to %s", db_call_id, status)
 
     def _remove_txn(self, branch: str) -> None:
         """Callback for transaction cleanup after termination."""
@@ -609,10 +723,11 @@ async def start_server(
     port: int = 5060,
     *,
     server_ip: str,
-    audio_routes: dict[str, bytes],
+    pool: asyncpg.Pool,
+    audio_buffers: dict[str, bytes],
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(server_ip=server_ip, audio_routes=audio_routes)
+    server = SipServer(server_ip=server_ip, pool=pool, audio_buffers=audio_buffers)
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )

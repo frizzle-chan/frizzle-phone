@@ -51,7 +51,7 @@ jobs:
 
       - name: Run tests
         env:
-          DB_HOST: localhost
+          DATABASE_URL: postgresql://frizzle_phone:frizzle_phone@localhost:5432/frizzle_phone
         run: uv run pytest
 
       - name: Upload coverage reports to Codecov
