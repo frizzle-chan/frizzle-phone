@@ -375,8 +375,6 @@ class SipServer(asyncio.DatagramProtocol):
         if row is not None:
             guild_id = row["guild_id"]
             channel_id = row["channel_id"]
-            # Discord extensions use the first available audio buffer
-            audio_buf = next(iter(self._audio_buffers.values()), None)
 
             # App-layer check: one active discord call per phone
             existing_call = await self._pool.fetchrow(
@@ -402,7 +400,7 @@ class SipServer(asyncio.DatagramProtocol):
             if audio_row is not None:
                 audio_buf = self._audio_buffers.get(audio_row["audio_name"])
 
-        if audio_buf is None:
+        if audio_buf is None and guild_id is None:
             logger.info("Unknown extension %r → 404", extension)
             self._send(
                 build_response(msg, 404, "Not Found", to_tag=generate_tag()),
@@ -459,6 +457,8 @@ class SipServer(asyncio.DatagramProtocol):
             rtp_port=rtp_port,
             invite_request=msg,
             db_call_id=str(db_call_id) if db_call_id else None,
+            guild_id=guild_id,
+            channel_id=channel_id,
         )
         self._calls[call_id] = call
 
@@ -467,6 +467,42 @@ class SipServer(asyncio.DatagramProtocol):
         # field of 100 is downgraded from MAY to SHOULD NOT, so no
         # to_tag here.
         self._send(build_response(msg, 100, "Trying"), resp_addr)
+
+        # Discord extension: join voice channel before sending 200 OK
+        if guild_id is not None:
+            from discord.ext import voice_recv  # noqa: E402
+
+            assert channel_id is not None
+            guild = self._bot.get_guild(guild_id)
+            if guild is None:
+                self._calls.pop(call_id, None)
+                self._send(
+                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
+                    resp_addr,
+                )
+                return
+            channel = guild.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.VoiceChannel):
+                self._calls.pop(call_id, None)
+                self._send(
+                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
+                    resp_addr,
+                )
+                return
+            try:
+                vc = await asyncio.wait_for(
+                    channel.connect(cls=voice_recv.VoiceRecvClient),
+                    timeout=10.0,
+                )
+                call.voice_client = vc
+            except Exception:
+                logger.exception("Failed to connect to voice channel %s", channel_id)
+                self._calls.pop(call_id, None)
+                self._send(
+                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
+                    resp_addr,
+                )
+                return
 
         # RFC 3261 §13.3.1.4: 2xx response with SDP answer establishes
         # the session. Contact header required per §12.1.1 so the peer
