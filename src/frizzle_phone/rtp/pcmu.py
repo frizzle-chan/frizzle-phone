@@ -1,4 +1,6 @@
-"""μ-law (G.711 PCMU) encoder."""
+"""μ-law (G.711 PCMU) encoder/decoder."""
+
+import struct
 
 SAMPLE_RATE = 8000
 ULAW_BIAS = 0x84
@@ -36,6 +38,43 @@ def _build_ulaw_table() -> bytes:
 
 
 _ULAW_TABLE: bytes = _build_ulaw_table()
+
+
+def _build_ulaw_decode_table() -> list[int]:
+    """Pre-compute signed int16 PCM for all 256 μ-law input values."""
+    table = [0] * 256
+    for ulaw_byte in range(256):
+        # ITU-T G.711 standard decode
+        inv = ~ulaw_byte & 0xFF
+        sign = inv & 0x80
+        exponent = (inv >> 4) & 0x07
+        mantissa = inv & 0x0F
+        sample = ((mantissa << 3) + ULAW_BIAS) << exponent
+        sample -= ULAW_BIAS
+        if sign:
+            sample = -sample
+        table[ulaw_byte] = max(-32768, min(32767, sample))
+    return table
+
+
+_ULAW_DECODE_TABLE: list[int] = _build_ulaw_decode_table()
+
+
+def ulaw_to_pcm(data: bytes) -> bytes:
+    """Decode μ-law bytes to signed 16-bit little-endian PCM bytes."""
+    out = bytearray(len(data) * 2)
+    for i, b in enumerate(data):
+        struct.pack_into("<h", out, i * 2, _ULAW_DECODE_TABLE[b])
+    return bytes(out)
+
+
+def pcm16_to_ulaw(data: bytes) -> bytes:
+    """Encode signed 16-bit little-endian PCM bytes to μ-law."""
+    out = bytearray(len(data) // 2)
+    for i in range(0, len(data), 2):
+        pcm = struct.unpack_from("<h", data, i)[0]
+        out[i // 2] = _ULAW_TABLE[pcm & 0xFFFF]
+    return bytes(out)
 
 
 def pcm_to_ulaw(samples: list[float], peak: float = 0.95) -> bytes:
