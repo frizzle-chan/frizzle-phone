@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import html
 from typing import Any
 
+import aiohttp_jinja2
 import asyncpg
+import jinja2
 from aiohttp import web
 from discord.ext import commands
 
@@ -35,41 +36,13 @@ async def _get_handler(
     for row in audio_rows:
         audio_map[row["audio_name"]] = row["extension"]
 
-    parts = ["<html><body>", "<h1>Extension Routing</h1>"]
-    parts.append('<form method="POST" action="/extensions">')
-
-    # Discord extensions
-    parts.append("<h2>Discord Extensions</h2>")
-    parts.append("<table><tr><th>Guild</th><th>Channel</th><th>Extension</th></tr>")
-    for guild in bot.guilds:
-        for channel in guild.voice_channels:
-            key = f"{guild.id}_{channel.id}"
-            name = f"discord_{guild.id}_{channel.id}"
-            value = discord_map.get(key, {}).get("extension", "")
-            guild_name = html.escape(guild.name)
-            channel_name = html.escape(channel.name)
-            parts.append(
-                f"<tr><td>{guild_name}</td><td>{channel_name}</td>"
-                f'<td><input name="{name}" value="{html.escape(value)}"></td></tr>'
-            )
-    parts.append("</table>")
-
-    # Audio extensions
-    parts.append("<h2>Audio Extensions</h2>")
-    parts.append("<table><tr><th>Audio</th><th>Extension</th></tr>")
-    for audio_name in audio_names:
-        value = audio_map.get(audio_name, "")
-        parts.append(
-            f"<tr><td>{html.escape(audio_name)}</td>"
-            f'<td><input name="audio_{html.escape(audio_name)}"'
-            f' value="{html.escape(value)}"></td></tr>'
-        )
-    parts.append("</table>")
-
-    parts.append('<button type="submit">Save</button>')
-    parts.append("</form></body></html>")
-
-    return web.Response(text="\n".join(parts), content_type="text/html")
+    context = {
+        "guilds": bot.guilds,
+        "discord_map": discord_map,
+        "audio_names": audio_names,
+        "audio_map": audio_map,
+    }
+    return aiohttp_jinja2.render_template("extensions.html", request, context)
 
 
 async def _post_handler(
@@ -127,6 +100,11 @@ def create_app(
     audio_names: list[str],
 ) -> web.Application:
     app = web.Application()
+    aiohttp_jinja2.setup(
+        app,
+        loader=jinja2.PackageLoader("frizzle_phone"),
+        autoescape=jinja2.select_autoescape(),
+    )
     app[_pool_key] = pool
     app[_bot_key] = bot
     app[_audio_names_key] = audio_names

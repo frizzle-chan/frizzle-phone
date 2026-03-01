@@ -1,0 +1,26 @@
+<html><body>
+<h1>Extension Routing</h1>
+<form method="POST" action="/extensions">
+
+<h2>Discord Extensions</h2>
+<table><tr><th>Guild</th><th>Channel</th><th>Extension</th></tr>
+{% for guild in guilds %}
+{% for channel in guild.voice_channels %}
+{% set key = guild.id|string ~ "_" ~ channel.id|string %}
+{% set name = "discord_" ~ guild.id|string ~ "_" ~ channel.id|string %}
+{% set value = discord_map.get(key, {}).get("extension", "") %}
+<tr><td>{{ guild.name }}</td><td>{{ channel.name }}</td><td><input name="{{ name }}" value="{{ value }}"></td></tr>
+{% endfor %}
+{% endfor %}
+</table>
+
+<h2>Audio Extensions</h2>
+<table><tr><th>Audio</th><th>Extension</th></tr>
+{% for audio_name in audio_names %}
+{% set value = audio_map.get(audio_name, "") %}
+<tr><td>{{ audio_name }}</td><td><input name="audio_{{ audio_name }}" value="{{ value }}"></td></tr>
+{% endfor %}
+</table>
+
+<button type="submit">Save</button>
+</form></body></html>
