@@ -58,9 +58,12 @@ async def main() -> None:
     audio_buffers = {"techno": techno_buf, "beeps": beeps_buf}
 
     # Start Discord bot
-    bot_task = asyncio.create_task(bot.start(discord_token))
     if discord_token:
+        await bot.login(discord_token)
+        bot_task = asyncio.create_task(bot.connect())
         await bot.wait_until_ready()
+    else:
+        bot_task = None
 
     # Start SIP server
     transport, server = await start_server(
@@ -83,7 +86,8 @@ async def main() -> None:
         await stop_webapp(runner)
         if not bot.is_closed():
             await bot.close()
-        bot_task.cancel()
+        if bot_task is not None:
+            bot_task.cancel()
         await pool.close()
 
 
