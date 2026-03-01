@@ -418,7 +418,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.11" },
     { name = "aiohttp-jinja2", specifier = ">=1.6" },
     { name = "asyncpg", specifier = ">=0.30.0" },
-    { name = "discord-ext-voice-recv", specifier = ">=0.5.2a179" },
+    { name = "discord-ext-voice-recv", specifier = "==0.5.2a179" },
     { name = "discord-py", extras = ["voice"], specifier = ">=2.7.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "soxr", specifier = ">=0.5.0" },
