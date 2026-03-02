@@ -69,7 +69,7 @@ def test_phone_audio_source_is_not_opus():
 
 
 def test_phone_audio_sink_uses_threadsafe_enqueue():
-    """write() batches; a second write >15ms later flushes."""
+    """write() batches; a second write >2ms later flushes."""
     loop = MagicMock()
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
     sink = PhoneAudioSink(q, loop)
@@ -123,12 +123,11 @@ def test_phone_audio_sink_mixes_multiple_speakers():
         sink.write(user_b, data_b)
 
         # Verify pending frames contain both users' mono PCM
-        assert 1 in sink._pending_frames
-        assert 2 in sink._pending_frames
-        mono_a = sink._pending_frames[1]
-        mono_b = sink._pending_frames[2]
-        assert np.all(mono_a == val_a)
-        assert np.all(mono_b == val_b)
+        assert len(sink._pending_frames) == 2
+        assert sink._pending_frames[0][0] == 1  # user_key
+        assert sink._pending_frames[1][0] == 2  # user_key
+        assert np.all(sink._pending_frames[0][1] == val_a)
+        assert np.all(sink._pending_frames[1][1] == val_b)
 
         # Trigger flush via next-batch write
         mock_time.monotonic.return_value = t + 0.020

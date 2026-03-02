@@ -694,7 +694,7 @@ class SipServer(asyncio.DatagramProtocol):
         loop = asyncio.get_running_loop()
 
         phone_q: queue_mod.Queue[bytes] = queue_mod.Queue(maxsize=50)
-        discord_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+        discord_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=150)
         stats = BridgeStats()
 
         # Bind RTP receive on the port we advertised in SDP

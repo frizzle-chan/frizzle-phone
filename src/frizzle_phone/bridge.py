@@ -101,6 +101,14 @@ def _patched_callback(self: AudioReader, packet_data: bytes) -> None:
             and rtp_packet.is_silence()
         ):
             return
+        global _last_callback_rtp
+        now = time.monotonic()
+        if _last_callback_rtp > 0:
+            gap = now - _last_callback_rtp
+            if gap > 0.040:
+                logger.warning("bridge callback rtp gap: %.1fms", gap * 1000)
+        _last_callback_rtp = now
+
         self.speaking_timer.notify(rtp_packet.ssrc)
         try:
             self.packet_router.feed_rtp(rtp_packet)
@@ -114,6 +122,8 @@ AudioReader.callback = _patched_callback  # type: ignore[assignment]
 
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
+
+_last_callback_rtp: float = 0.0
 
 
 def stereo_to_mono(data: bytes) -> np.ndarray:
@@ -157,7 +167,7 @@ class PhoneAudioSource(discord.AudioSource):
         self._stopped = True
 
 
-_MIX_BATCH_THRESHOLD = 0.015  # 15ms — separates "same batch" from "new batch"
+_MIX_BATCH_THRESHOLD = 0.002  # 2ms — micro-batch for multi-speaker mixing
 _MIX_STALE_THRESHOLD = 0.060  # 60ms — discard stale frames after silence gap
 
 
@@ -165,8 +175,8 @@ class PhoneAudioSink(voice_recv.AudioSink):
     """Receives Discord voice and enqueues ulaw for phone RTP send.
 
     Multiple speakers are mixed at 48kHz before resampling to 8kHz.
-    Frames are accumulated per-user within a ~20ms batch window and
-    flushed when the next batch arrives.
+    Frames are accumulated in a list within a micro-batch window and
+    flushed using slot-based grouping to handle burst delivery.
     """
 
     def __init__(
@@ -179,7 +189,7 @@ class PhoneAudioSink(voice_recv.AudioSink):
         super().__init__()
         self._queue = discord_to_phone_queue
         self._loop = loop
-        self._pending_frames: dict[int, np.ndarray] = {}
+        self._pending_frames: list[tuple[int, np.ndarray]] = []
         self._mix_start_time: float = 0.0
         self._stats = stats
         self._resampler = soxr.ResampleStream(
@@ -201,20 +211,35 @@ class PhoneAudioSink(voice_recv.AudioSink):
                 )
 
     def _flush_mix(self) -> None:
-        """Sum all pending frames, resample to 8kHz, and enqueue as ulaw."""
+        """Group accumulated frames into time slots, mix, resample, and enqueue."""
         if not self._pending_frames:
             return
-        if self._stats:
-            self._stats.d2p_frames_mixed += 1
-        mixed = np.sum(
-            list(self._pending_frames.values()),
-            axis=0,
-            dtype=np.int32,
-        )
-        mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
-        arr_8k = self._resampler.resample_chunk(mixed)
-        ulaw_payload = pcm16_to_ulaw(arr_8k.tobytes())
-        self._loop.call_soon_threadsafe(self._enqueue, ulaw_payload)
+
+        # Group into time slots — new slot starts when a user_key repeats
+        slots: list[dict[int, np.ndarray]] = []
+        current_slot: dict[int, np.ndarray] = {}
+        for user_key, mono in self._pending_frames:
+            if user_key in current_slot:
+                slots.append(current_slot)
+                current_slot = {}
+            current_slot[user_key] = mono
+        if current_slot:
+            slots.append(current_slot)
+
+        for slot in slots:
+            if self._stats:
+                self._stats.d2p_frames_mixed += 1
+            if len(slot) == 1:
+                mixed = next(iter(slot.values()))
+            else:
+                mixed = np.clip(
+                    np.sum(list(slot.values()), axis=0, dtype=np.int32),
+                    -32768,
+                    32767,
+                ).astype(np.int16)
+            arr_8k = self._resampler.resample_chunk(mixed)
+            ulaw_payload = pcm16_to_ulaw(arr_8k.tobytes())
+            self._loop.call_soon_threadsafe(self._enqueue, ulaw_payload)
 
     def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
         now = time.monotonic()
@@ -240,7 +265,7 @@ class PhoneAudioSink(voice_recv.AudioSink):
             self._mix_start_time = now
 
         user_key = user.id if user is not None else 0
-        self._pending_frames[user_key] = stereo_to_mono(data.pcm)
+        self._pending_frames.append((user_key, stereo_to_mono(data.pcm)))
 
     def cleanup(self) -> None:
         self._flush_mix()
@@ -265,7 +290,9 @@ async def rtp_send_loop(
 
     while not stop_event.is_set():
         try:
-            payload = await asyncio.wait_for(discord_to_phone_queue.get(), timeout=0.04)
+            payload = await asyncio.wait_for(
+                discord_to_phone_queue.get(), timeout=PTIME_MS / 1000.0
+            )
             is_silence = False
         except TimeoutError:
             payload = ULAW_SILENCE_PAYLOAD
@@ -286,7 +313,12 @@ async def rtp_send_loop(
                 stats.d2p_queue_depth_max = depth
 
         next_send += PTIME_MS / 1000.0
-        sleep_dur = next_send - time.monotonic()
+        now = time.monotonic()
+        # Cap drift: if next_send fell >1 ptime behind (e.g. after silence
+        # gap with timeout > ptime), snap forward so burst frames get paced.
+        if next_send < now - PTIME_MS / 1000.0:
+            next_send = now
+        sleep_dur = next_send - now
         if sleep_dur > 0:
             await asyncio.sleep(sleep_dur)
             if stats:
