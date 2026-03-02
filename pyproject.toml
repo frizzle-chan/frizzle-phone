@@ -31,6 +31,7 @@ dev = [
     "squawk-cli>=2.36.0",
     "ty>=0.0.8",
     "vulture>=2.14",
+    "pytest-regressions>=2.5",
 ]
 
 [tool.pytest.ini_options]
