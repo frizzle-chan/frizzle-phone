@@ -747,8 +747,7 @@ class SipServer(asyncio.DatagramProtocol):
         response = build_response(msg, 200, "OK", to_tag=generate_tag())
         self._send(response, resp_addr)
 
-    @staticmethod
-    async def _reserve_rtp_port() -> int:
+    async def _reserve_rtp_port(self) -> int:
         """Bind a UDP socket to get an OS-assigned port, then release it.
 
         Note: TOCTOU race — the port is released before the RTP stream
@@ -759,7 +758,7 @@ class SipServer(asyncio.DatagramProtocol):
 
         def _bind() -> int:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.bind(("0.0.0.0", 0))
+                sock.bind(("", 0))
                 return sock.getsockname()[1]
 
         return await asyncio.get_running_loop().run_in_executor(None, _bind)
