@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import queue
 
@@ -19,13 +18,30 @@ P2D_QUEUE_SIZE = 15  # Phone-to-Discord: ~300ms at 20ms/frame
 D2P_QUEUE_SIZE = 50  # Discord-to-Phone: ~1s at 20ms/frame
 
 
-@dataclasses.dataclass
 class BridgeHandle:
     """Opaque handle returned by BridgeManager for later teardown."""
 
-    stop_event: asyncio.Event
-    send_task: asyncio.Task[None]
-    rtp_transport: asyncio.DatagramTransport
+    def __init__(
+        self,
+        stop_event: asyncio.Event,
+        send_task: asyncio.Task[None],
+        rtp_transport: asyncio.DatagramTransport,
+        voice_client: voice_recv.VoiceRecvClient,
+        sink: PhoneAudioSink,
+    ) -> None:
+        self._stop_event = stop_event
+        self._send_task = send_task
+        self._rtp_transport = rtp_transport
+        self._voice_client = voice_client
+        self._sink = sink
+
+    def stop(self) -> None:
+        """Tear down the bridge. Idempotent."""
+        self._stop_event.set()
+        self._send_task.cancel()
+        self._rtp_transport.close()
+        self._voice_client.stop()
+        self._sink.cleanup()
 
 
 class BridgeManager:
@@ -42,7 +58,7 @@ class BridgeManager:
     ) -> BridgeHandle:
         """Set up a bidirectional audio bridge.
 
-        Returns a BridgeHandle for later teardown via stop().
+        Returns a BridgeHandle for later teardown via handle.stop().
         """
         loop = asyncio.get_running_loop()
 
@@ -83,14 +99,9 @@ class BridgeManager:
             stop_event=stop_event,
             send_task=send_task,
             rtp_transport=rtp_transport,
+            voice_client=voice_client,
+            sink=sink,
         )
-
-    @staticmethod
-    def stop(handle: BridgeHandle) -> None:
-        """Tear down a bridge. Idempotent."""
-        handle.stop_event.set()
-        handle.send_task.cancel()
-        handle.rtp_transport.close()
 
     def shutdown(self) -> None:
         """Cancel all bridge tasks (called during server shutdown)."""

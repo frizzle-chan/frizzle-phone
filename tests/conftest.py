@@ -6,6 +6,7 @@ import asyncio
 import os
 import random
 import string
+import struct
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,6 +27,17 @@ class FakeTransport(asyncio.DatagramTransport):
     def sendto(self, data: Any, addr: Any = None) -> None:
         if addr is not None:
             self.sent.append((bytes(data), addr))
+
+
+def build_rtp_packet(payload: bytes, *, cc: int = 0, extension: bool = False) -> bytes:
+    """Build a minimal RTP packet for testing."""
+    first_byte = 0x80 | (0x10 if extension else 0) | cc  # V=2, P=0
+    header = struct.pack("!BBHII", first_byte, 0, 0, 0, 0)
+    csrc = b"\x00\x00\x00\x00" * cc
+    ext_bytes = b""
+    if extension:
+        ext_bytes = struct.pack("!HH", 0, 1) + b"\x00\x00\x00\x00"  # 1-word extension
+    return header + csrc + ext_bytes + payload
 
 
 # ---------------------------------------------------------------------------

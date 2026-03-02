@@ -73,6 +73,11 @@ def pcm16_to_ulaw(data: bytes) -> bytes:
     return bytes(_ULAW_TABLE_NP[np.frombuffer(data, dtype=np.int16).view(np.uint16)])
 
 
+def pcm16_arr_to_ulaw(samples: np.ndarray) -> bytes:
+    """Encode int16 ndarray to μ-law bytes (avoids bytes→ndarray round-trip)."""
+    return bytes(_ULAW_TABLE_NP[samples.view(np.uint16)])
+
+
 def pcm_to_ulaw(samples: list[float], peak: float = 0.95) -> bytes:
     """Convert float PCM buffer to μ-law bytes with normalisation."""
     arr = np.asarray(samples, dtype=np.float64)

@@ -159,6 +159,8 @@ async def test_voice_disconnect_sends_bye(pool):
         stop_event=asyncio.Event(),
         send_task=MagicMock(),
         rtp_transport=MagicMock(),
+        voice_client=vc,
+        sink=MagicMock(),
     )
 
     call = Call(

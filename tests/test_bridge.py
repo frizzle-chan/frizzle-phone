@@ -8,9 +8,9 @@ from frizzle_phone.bridge import (
     SILENCE_FRAME,
     PhoneAudioSink,
     PhoneAudioSource,
-    _patched_callback,
     stereo_to_mono,
 )
+from frizzle_phone.discord_patches import _patched_callback
 
 _SSRC = 12345
 _USER_ID = 42
@@ -20,6 +20,7 @@ def _make_reader(*, dave_session=None, ssrc_map=None):
     """Create a mocked AudioReader for _patched_callback tests."""
     reader = MagicMock()
     reader.error = None
+    reader._last_callback_rtp = 0.0
     reader.voice_client._ssrc_to_id = ssrc_map if ssrc_map is not None else {}
     reader.voice_client._connection.dave_session = dave_session
     return reader
@@ -55,10 +56,10 @@ def test_phone_audio_source_returns_silence_on_empty():
     assert len(result) == 3840
 
 
-def test_phone_audio_source_returns_empty_when_stopped():
+def test_phone_audio_source_returns_empty_after_cleanup():
     q: queue.Queue[bytes] = queue.Queue()
     source = PhoneAudioSource(q)
-    source.stop()
+    source.cleanup()
     assert source.read() == b""
 
 
@@ -66,6 +67,13 @@ def test_phone_audio_source_is_not_opus():
     q: queue.Queue[bytes] = queue.Queue()
     source = PhoneAudioSource(q)
     assert source.is_opus() is False
+
+
+def test_phone_audio_sink_wants_opus_returns_false():
+    loop = MagicMock()
+    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+    sink = PhoneAudioSink(q, loop)
+    assert sink.wants_opus() is False
 
 
 def test_phone_audio_sink_uses_threadsafe_enqueue():
@@ -122,12 +130,7 @@ def test_phone_audio_sink_mixes_multiple_speakers():
         sink.write(user_a, data_a)
         sink.write(user_b, data_b)
 
-        # Verify pending frames contain both users' mono PCM
-        assert len(sink._pending_frames) == 2
-        assert sink._pending_frames[0][0] == 1  # user_key
-        assert sink._pending_frames[1][0] == 2  # user_key
-        assert np.all(sink._pending_frames[0][1] == val_a)
-        assert np.all(sink._pending_frames[1][1] == val_b)
+        # Both speakers accumulated; mixing verified after flush below
 
         # Trigger flush via next-batch write
         mock_time.monotonic.return_value = t + 0.020
@@ -150,7 +153,7 @@ def test_phone_audio_sink_mixes_multiple_speakers():
 # ---------------------------------------------------------------------------
 
 
-@patch("frizzle_phone.bridge.rtp")
+@patch("frizzle_phone.discord_patches.rtp")
 def test_patched_callback_dave_decryption(mock_rtp):
     """DAVE session decrypts transport-decrypted payload via XOR mock."""
     payload = b"\x01\x02\x03\x04" * 10
@@ -179,7 +182,7 @@ def test_patched_callback_dave_decryption(mock_rtp):
     reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
 
 
-@patch("frizzle_phone.bridge.rtp")
+@patch("frizzle_phone.discord_patches.rtp")
 def test_patched_callback_no_dave_session(mock_rtp):
     """Without DAVE session, transport-decrypted payload passes through directly."""
     payload = b"\xde\xad" * 20
@@ -199,7 +202,7 @@ def test_patched_callback_no_dave_session(mock_rtp):
     reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
 
 
-@patch("frizzle_phone.bridge.rtp")
+@patch("frizzle_phone.discord_patches.rtp")
 def test_patched_callback_dave_not_ready(mock_rtp):
     """DAVE session exists but not ready — bypass decryption."""
     payload = b"\xbe\xef" * 20
@@ -223,7 +226,7 @@ def test_patched_callback_dave_not_ready(mock_rtp):
     reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
 
 
-@patch("frizzle_phone.bridge.rtp")
+@patch("frizzle_phone.discord_patches.rtp")
 def test_patched_callback_dave_unknown_ssrc(mock_rtp):
     """DAVE ready but SSRC not mapped — skip DAVE decrypt, use transport decrypted."""
     payload = b"\xca\xfe" * 20

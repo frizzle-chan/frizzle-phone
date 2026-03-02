@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 import discord.opus
 import pytest
 
-from frizzle_phone.bridge import PhoneAudioSink, _patched_callback, rtp_send_loop
+from frizzle_phone.bridge import PhoneAudioSink, rtp_send_loop
+from frizzle_phone.discord_patches import _patched_callback
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 from tests.audio_helpers import (
     FIXTURES,
@@ -57,6 +58,7 @@ async def test_dave_to_rtp_e2e(file_regression):
 
     reader = MagicMock()
     reader.error = None
+    reader._last_callback_rtp = 0.0
     reader.voice_client._ssrc_to_id = {ssrc: user_id}
 
     dave_mock = MagicMock()
@@ -71,7 +73,7 @@ async def test_dave_to_rtp_e2e(file_regression):
     decoded_pcm_frames = []
     decoder = discord.opus.Decoder()
 
-    with patch("frizzle_phone.bridge.rtp") as mock_rtp:
+    with patch("frizzle_phone.discord_patches.rtp") as mock_rtp:
         mock_rtp.is_rtcp.return_value = False
         mock_rtp.decode_rtp.return_value = mock_packet
 
@@ -110,7 +112,7 @@ async def test_dave_to_rtp_e2e(file_regression):
     for payload in ulaw_payloads:
         send_q.put_nowait(payload)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     collector = _RtpCollector()
     recv_transport, _ = await loop.create_datagram_endpoint(
         lambda: collector, local_addr=("127.0.0.1", 0)

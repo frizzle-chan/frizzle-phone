@@ -1,25 +1,15 @@
 import queue
-import struct
 
+from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.receive import RtpReceiveProtocol
-
-
-def _build_rtp_packet(payload: bytes, *, cc: int = 0, extension: bool = False) -> bytes:
-    """Build a minimal RTP packet for testing."""
-    first_byte = 0x80 | (0x10 if extension else 0) | cc  # V=2, P=0
-    header = struct.pack("!BBHII", first_byte, 0, 0, 0, 0)
-    csrc = b"\x00\x00\x00\x00" * cc
-    ext_bytes = b""
-    if extension:
-        ext_bytes = struct.pack("!HH", 0, 1) + b"\x00\x00\x00\x00"  # 1-word extension
-    return header + csrc + ext_bytes + payload
+from tests.conftest import build_rtp_packet
 
 
 def test_rtp_receive_extracts_payload():
     q: queue.Queue[bytes] = queue.Queue()
     proto = RtpReceiveProtocol(q)
     payload = b"\xff" * 160
-    proto.datagram_received(_build_rtp_packet(payload), ("127.0.0.1", 9000))
+    proto.datagram_received(build_rtp_packet(payload), ("127.0.0.1", 9000))
     assert not q.empty()
 
 
@@ -34,7 +24,7 @@ def test_rtp_receive_handles_csrc():
     q: queue.Queue[bytes] = queue.Queue()
     proto = RtpReceiveProtocol(q)
     payload = b"\xff" * 160
-    proto.datagram_received(_build_rtp_packet(payload, cc=2), ("127.0.0.1", 9000))
+    proto.datagram_received(build_rtp_packet(payload, cc=2), ("127.0.0.1", 9000))
     assert not q.empty()
 
 
@@ -43,6 +33,20 @@ def test_rtp_receive_handles_extension():
     proto = RtpReceiveProtocol(q)
     payload = b"\xff" * 160
     proto.datagram_received(
-        _build_rtp_packet(payload, extension=True), ("127.0.0.1", 9000)
+        build_rtp_packet(payload, extension=True), ("127.0.0.1", 9000)
     )
     assert not q.empty()
+
+
+def test_rtp_receive_drops_oldest_on_overflow():
+    """When p2d queue is full, oldest frame is dropped and new frame enqueued."""
+    q: queue.Queue[bytes] = queue.Queue(maxsize=1)
+    old_frame = b"old_frame_marker"
+    q.put(old_frame)
+    stats = BridgeStats()
+    proto = RtpReceiveProtocol(q, stats=stats)
+    proto.datagram_received(build_rtp_packet(b"\xff" * 160), ("127.0.0.1", 9000))
+    assert stats.p2d_queue_overflow == 1
+    assert q.qsize() == 1
+    frame = q.get_nowait()
+    assert frame != old_frame  # old was dropped, new was enqueued

@@ -53,7 +53,7 @@ exclude = ["vulture_whitelist.py"]
 [tool.vulture]
 paths = ["src/frizzle_phone/", "main.py", "tests/", "vulture_whitelist.py"]
 min_confidence = 60
-ignore_names = ["clean_user_state", "datagram_received", "connection_made", "connection_lost", "error_received", "header_values", "event_loop", "_test_db", "FakeTransport", "sendto", "seeded_pool", "voice_channels", "get_transport", "PhoneAudioSink", "is_opus", "cleanup", "wants_opus", "write", "rtp_send_loop", "sip_server", "_bot", "on_voice_state_update", "hangup_by_voice_channel"]
+ignore_names = ["clean_user_state", "datagram_received", "connection_made", "connection_lost", "error_received", "header_values", "event_loop", "_test_db", "FakeTransport", "sendto", "seeded_pool", "voice_channels", "get_transport", "PhoneAudioSink", "is_opus", "cleanup", "wants_opus", "write", "rtp_send_loop", "_bot", "on_voice_state_update", "hangup_by_voice_channel", "_cleanup_hangup_handler"]
 exclude = ["*_unit_test.py", "*_image_test.py"]
 
 [tool.ruff]

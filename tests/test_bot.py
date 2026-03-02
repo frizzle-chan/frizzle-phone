@@ -4,7 +4,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from frizzle_phone.bot import create_bot
+from frizzle_phone.bot import clear_hangup_handler, create_bot, set_hangup_handler
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_hangup_handler():
+    yield
+    clear_hangup_handler()
 
 
 def test_create_bot_intents():
@@ -20,7 +26,7 @@ async def test_voice_state_update_sends_bye_on_bot_disconnect():
     bot._connection.user = MagicMock(id=123)
 
     mock_server = MagicMock()
-    bot.sip_server = mock_server  # type: ignore[attr-defined]
+    set_hangup_handler(mock_server)
 
     member = MagicMock(id=123)
     before = MagicMock()
@@ -48,7 +54,7 @@ async def test_voice_state_update_ignores_other_users():
     bot._connection.user = MagicMock(id=123)
 
     mock_server = MagicMock()
-    bot.sip_server = mock_server  # type: ignore[attr-defined]
+    set_hangup_handler(mock_server)
 
     member = MagicMock(id=456)  # different user
     before = MagicMock()

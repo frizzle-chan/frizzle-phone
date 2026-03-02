@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 
 def _mono_to_stereo(mono: np.ndarray) -> bytes:
     """Duplicate mono int16 samples to stereo (interleaved L=R)."""
-    stereo = np.column_stack((mono, mono))
-    return stereo.astype(np.int16).tobytes()
+    return np.repeat(mono, 2).tobytes()
 
 
 class RtpReceiveProtocol(asyncio.DatagramProtocol):
@@ -64,7 +63,9 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         # Mono → stereo
         stereo = _mono_to_stereo(arr_48k)
 
-        # Enqueue for Discord (drop oldest on overflow)
+        # Enqueue for Discord — drop oldest on overflow to preserve freshness
+        # for real-time playback.  (Contrast with d2p in bridge.py which drops
+        # newest as simple backpressure.)
         try:
             self._queue.put_nowait(stereo)
         except queue.Full:

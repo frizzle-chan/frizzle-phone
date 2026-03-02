@@ -15,3 +15,6 @@ _.decrypted_data  # type: ignore[name-defined]
 # unittest.mock return_value/side_effect assignment (vulture can't trace mock attribute usage)
 _.return_value  # type: ignore[name-defined]
 _.side_effect  # type: ignore[name-defined]
+
+# __class__ assignment used in tests to control isinstance() behavior on mocks
+_.__class__  # type: ignore[name-defined]
