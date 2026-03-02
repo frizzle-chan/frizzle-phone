@@ -706,7 +706,7 @@ class SipServer(asyncio.DatagramProtocol):
         call.voice_client.play(source)
 
         # Discord → Phone
-        sink = PhoneAudioSink(discord_q)
+        sink = PhoneAudioSink(discord_q, loop)
         call.voice_client.listen(sink)
 
         # RTP send loop
