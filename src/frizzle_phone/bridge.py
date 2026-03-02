@@ -45,9 +45,6 @@ def _patched_do_run(self: PacketRouter) -> None:
                     self.sink.write(data.source, data)
 
 
-PacketRouter._do_run = _patched_do_run  # type: ignore[assignment]
-
-
 def _patched_callback(self: AudioReader, packet_data: bytes) -> None:
     """AudioReader.callback with DAVE decryption injected.
 
@@ -118,7 +115,21 @@ def _patched_callback(self: AudioReader, packet_data: bytes) -> None:
             self.stop()
 
 
-AudioReader.callback = _patched_callback  # type: ignore[assignment]
+def apply_discord_patches() -> None:
+    """Apply monkey-patches to discord-ext-voice-recv for DAVE and error handling.
+
+    Must be called before connecting to Discord voice.
+    """
+    ver = getattr(voice_recv, "__version__", "unknown")
+    if not str(ver).startswith("0.5."):
+        logger.warning(
+            "discord-ext-voice-recv version %s may be incompatible with "
+            "frizzle-phone patches (written for 0.5.x)",
+            ver,
+        )
+    setattr(PacketRouter, "_do_run", _patched_do_run)  # noqa: B010
+    setattr(AudioReader, "callback", _patched_callback)  # noqa: B010
+
 
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
@@ -129,7 +140,9 @@ _last_callback_rtp: float = 0.0
 def stereo_to_mono(data: bytes) -> np.ndarray:
     """Convert 48kHz stereo s16le PCM to mono int16 array."""
     stereo = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
-    return stereo.mean(axis=1).astype(np.int16)
+    left = stereo[:, 0].astype(np.int32)
+    right = stereo[:, 1].astype(np.int32)
+    return ((left + right) >> 1).astype(np.int16)
 
 
 class PhoneAudioSource(discord.AudioSource):
@@ -290,11 +303,9 @@ async def rtp_send_loop(
 
     while not stop_event.is_set():
         try:
-            payload = await asyncio.wait_for(
-                discord_to_phone_queue.get(), timeout=PTIME_MS / 1000.0
-            )
+            payload = discord_to_phone_queue.get_nowait()
             is_silence = False
-        except TimeoutError:
+        except asyncio.QueueEmpty:
             payload = ULAW_SILENCE_PAYLOAD
             is_silence = True
 

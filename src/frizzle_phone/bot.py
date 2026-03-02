@@ -27,17 +27,12 @@ def create_bot() -> commands.Bot:
             sip_server = getattr(bot, "sip_server", None)
             if sip_server is None:
                 return
-            for call in list(sip_server._calls.values()):
-                if (
-                    call.voice_client is not None
-                    and call.guild_id == before.channel.guild.id
-                    and call.channel_id == before.channel.id
-                ):
-                    logger.info(
-                        "Bot disconnected from voice channel %s, sending BYE",
-                        before.channel.id,
-                    )
-                    sip_server._send_bye(call)
-                    break
+            logger.info(
+                "Bot disconnected from voice channel %s, sending BYE",
+                before.channel.id,
+            )
+            sip_server.hangup_by_voice_channel(
+                before.channel.guild.id, before.channel.id
+            )
 
     return bot

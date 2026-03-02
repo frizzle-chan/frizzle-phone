@@ -1,6 +1,6 @@
 """μ-law (G.711 PCMU) encoder/decoder."""
 
-import struct
+import numpy as np
 
 SAMPLE_RATE = 8000
 ULAW_BIAS = 0x84
@@ -59,36 +59,26 @@ def _build_ulaw_decode_table() -> list[int]:
 
 _ULAW_DECODE_TABLE: list[int] = _build_ulaw_decode_table()
 
+_ULAW_DECODE_NP: np.ndarray = np.array(_ULAW_DECODE_TABLE, dtype=np.int16)
+_ULAW_TABLE_NP: np.ndarray = np.frombuffer(_ULAW_TABLE, dtype=np.uint8)
+
 
 def ulaw_to_pcm(data: bytes) -> bytes:
     """Decode μ-law bytes to signed 16-bit little-endian PCM bytes."""
-    out = bytearray(len(data) * 2)
-    for i, b in enumerate(data):
-        struct.pack_into("<h", out, i * 2, _ULAW_DECODE_TABLE[b])
-    return bytes(out)
+    return _ULAW_DECODE_NP[np.frombuffer(data, dtype=np.uint8)].tobytes()
 
 
 def pcm16_to_ulaw(data: bytes) -> bytes:
     """Encode signed 16-bit little-endian PCM bytes to μ-law."""
-    out = bytearray(len(data) // 2)
-    for i in range(0, len(data), 2):
-        pcm = struct.unpack_from("<h", data, i)[0]
-        out[i // 2] = _ULAW_TABLE[pcm & 0xFFFF]
-    return bytes(out)
+    return bytes(_ULAW_TABLE_NP[np.frombuffer(data, dtype=np.int16).view(np.uint16)])
 
 
 def pcm_to_ulaw(samples: list[float], peak: float = 0.95) -> bytes:
     """Convert float PCM buffer to μ-law bytes with normalisation."""
-    # Find actual peak for headroom
-    max_val = max(abs(s) for s in samples) if samples else 1.0
+    arr = np.asarray(samples, dtype=np.float64)
+    max_val = float(np.max(np.abs(arr))) if len(arr) > 0 else 1.0
     if max_val < 0.001:
         max_val = 1.0
     scale = peak * 32767.0 / max_val
-
-    buf = bytearray(len(samples))
-    table = _ULAW_TABLE
-    for i, s in enumerate(samples):
-        pcm = int(s * scale)
-        pcm = max(-32768, min(32767, pcm))
-        buf[i] = table[pcm & 0xFFFF]
-    return bytes(buf)
+    pcm = np.clip(arr * scale, -32768, 32767).astype(np.int16)
+    return bytes(_ULAW_TABLE_NP[pcm.view(np.uint16)])

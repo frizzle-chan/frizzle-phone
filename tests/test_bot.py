@@ -15,17 +15,11 @@ def test_create_bot_intents():
 
 @pytest.mark.asyncio
 async def test_voice_state_update_sends_bye_on_bot_disconnect():
-    """When bot is disconnected from voice, send BYE for the matching call."""
+    """When bot is disconnected from voice, call hangup_by_voice_channel."""
     bot = create_bot()
     bot._connection.user = MagicMock(id=123)
 
-    mock_call = MagicMock()
-    mock_call.voice_client = MagicMock()
-    mock_call.guild_id = 1
-    mock_call.channel_id = 2
-
     mock_server = MagicMock()
-    mock_server._calls = {"test-call": mock_call}
     bot.sip_server = mock_server  # type: ignore[attr-defined]
 
     member = MagicMock(id=123)
@@ -44,7 +38,7 @@ async def test_voice_state_update_sends_bye_on_bot_disconnect():
     assert handler is not None, "on_voice_state_update handler not registered"
     await handler(member, before, after)
 
-    mock_server._send_bye.assert_called_once_with(mock_call)
+    mock_server.hangup_by_voice_channel.assert_called_once_with(1, 2)
 
 
 @pytest.mark.asyncio
@@ -54,7 +48,6 @@ async def test_voice_state_update_ignores_other_users():
     bot._connection.user = MagicMock(id=123)
 
     mock_server = MagicMock()
-    mock_server._calls = {}
     bot.sip_server = mock_server  # type: ignore[attr-defined]
 
     member = MagicMock(id=456)  # different user
@@ -70,4 +63,4 @@ async def test_voice_state_update_ignores_other_users():
     assert handler is not None
     await handler(member, before, after)
 
-    mock_server._send_bye.assert_not_called()
+    mock_server.hangup_by_voice_channel.assert_not_called()

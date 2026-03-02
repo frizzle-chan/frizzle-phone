@@ -10,6 +10,7 @@ import asyncpg
 from dotenv import load_dotenv
 
 from frizzle_phone.bot import create_bot
+from frizzle_phone.bridge import apply_discord_patches
 from frizzle_phone.database import run_migrations
 from frizzle_phone.rtp.pcmu import pcm_to_ulaw
 from frizzle_phone.rtp.stream import SAMPLES_PER_PACKET
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     load_dotenv()
+    apply_discord_patches()
     discord_token = os.environ.get("DISCORD_TOKEN", "")
     database_url = os.environ.get(
         "DATABASE_URL",
