@@ -8,6 +8,7 @@ import queue
 import numpy as np
 import soxr
 
+from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,15 @@ def _mono_to_stereo(mono: np.ndarray) -> bytes:
 class RtpReceiveProtocol(asyncio.DatagramProtocol):
     """Receives RTP from the phone, decodes PCMU, resamples, enqueues for Discord."""
 
-    def __init__(self, phone_to_discord_queue: queue.Queue[bytes]) -> None:
+    def __init__(
+        self,
+        phone_to_discord_queue: queue.Queue[bytes],
+        *,
+        stats: BridgeStats | None = None,
+    ) -> None:
         self._queue = phone_to_discord_queue
         self._transport: asyncio.DatagramTransport | None = None
+        self._stats = stats
         self._resampler = soxr.ResampleStream(
             8000, 48000, 1, dtype="int16", quality=soxr.QQ
         )
@@ -46,6 +53,9 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         if not payload:
             return
 
+        if self._stats:
+            self._stats.record_p2d_recv()
+
         # Decode PCMU → int16 PCM (8kHz mono)
         pcm_8k = ulaw_to_pcm(payload)
         # Resample 8kHz → 48kHz
@@ -58,6 +68,12 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         try:
             self._queue.put_nowait(stereo)
         except queue.Full:
+            if self._stats:
+                self._stats.p2d_queue_overflow += 1
+                logger.warning(
+                    "bridge p2d queue full, dropping oldest (depth=%d)",
+                    self._queue.qsize(),
+                )
             with contextlib.suppress(queue.Empty):
                 self._queue.get_nowait()
             self._queue.put_nowait(stereo)

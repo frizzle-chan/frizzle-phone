@@ -1,7 +1,6 @@
 """Bidirectional audio bridge between SIP/RTP and Discord voice."""
 
 import asyncio
-import contextlib
 import logging
 import queue
 import random
@@ -18,6 +17,7 @@ from discord.ext.voice_recv.router import PacketRouter
 from discord.opus import OpusError
 from nacl.exceptions import CryptoError
 
+from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.pcmu import pcm16_to_ulaw
 from frizzle_phone.rtp.stream import PTIME_MS, SAMPLES_PER_PACKET, build_rtp_packet
 
@@ -125,16 +125,26 @@ def stereo_to_mono(data: bytes) -> np.ndarray:
 class PhoneAudioSource(discord.AudioSource):
     """Feeds phone audio to Discord voice channel."""
 
-    def __init__(self, phone_to_discord_queue: queue.Queue[bytes]) -> None:
+    def __init__(
+        self,
+        phone_to_discord_queue: queue.Queue[bytes],
+        *,
+        stats: BridgeStats | None = None,
+    ) -> None:
         self._queue = phone_to_discord_queue
         self._stopped = False
+        self._stats = stats
 
     def read(self) -> bytes:
         if self._stopped:
             return b""
+        if self._stats:
+            self._stats.p2d_reads += 1
         try:
             return self._queue.get_nowait()
         except queue.Empty:
+            if self._stats:
+                self._stats.p2d_silence_reads += 1
             return SILENCE_FRAME
 
     def is_opus(self) -> bool:
@@ -163,12 +173,15 @@ class PhoneAudioSink(voice_recv.AudioSink):
         self,
         discord_to_phone_queue: asyncio.Queue[bytes],
         loop: asyncio.AbstractEventLoop,
+        *,
+        stats: BridgeStats | None = None,
     ) -> None:
         super().__init__()
         self._queue = discord_to_phone_queue
         self._loop = loop
         self._pending_frames: dict[int, np.ndarray] = {}
         self._mix_start_time: float = 0.0
+        self._stats = stats
         self._resampler = soxr.ResampleStream(
             48000, 8000, 1, dtype="int16", quality=soxr.QQ
         )
@@ -177,13 +190,22 @@ class PhoneAudioSink(voice_recv.AudioSink):
         return False
 
     def _enqueue(self, payload: bytes) -> None:
-        with contextlib.suppress(asyncio.QueueFull):
+        try:
             self._queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            if self._stats:
+                self._stats.d2p_queue_overflow += 1
+                logger.warning(
+                    "bridge d2p queue full, dropping frame (depth=%d)",
+                    self._queue.qsize(),
+                )
 
     def _flush_mix(self) -> None:
         """Sum all pending frames, resample to 8kHz, and enqueue as ulaw."""
         if not self._pending_frames:
             return
+        if self._stats:
+            self._stats.d2p_frames_mixed += 1
         mixed = np.sum(
             list(self._pending_frames.values()),
             axis=0,
@@ -196,11 +218,15 @@ class PhoneAudioSink(voice_recv.AudioSink):
 
     def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
         now = time.monotonic()
+        if self._stats:
+            self._stats.record_d2p_write()
 
         if self._pending_frames:
             age = now - self._mix_start_time
             if age > _MIX_STALE_THRESHOLD:
                 # Stale batch after silence gap — flush then discard
+                if self._stats:
+                    self._stats.d2p_stale_flush += 1
                 self._flush_mix()
                 self._pending_frames.clear()
                 self._resampler = soxr.ResampleStream(
@@ -227,6 +253,7 @@ async def rtp_send_loop(
     remote_addr: tuple[str, int],
     *,
     stop_event: asyncio.Event,
+    stats: BridgeStats | None = None,
 ) -> None:
     """Dequeue ulaw payloads and send as RTP packets at 20ms intervals."""
     ssrc = random.randint(0, 0xFFFFFFFF)
@@ -234,12 +261,15 @@ async def rtp_send_loop(
     timestamp = random.randint(0, 0xFFFFFFFF)
     next_send = time.monotonic()
     first = True
+    last_summary = time.monotonic()
 
     while not stop_event.is_set():
         try:
             payload = await asyncio.wait_for(discord_to_phone_queue.get(), timeout=0.04)
+            is_silence = False
         except TimeoutError:
             payload = ULAW_SILENCE_PAYLOAD
+            is_silence = True
 
         packet = build_rtp_packet(seq, timestamp, ssrc, payload, marker=first)
         transport.sendto(packet, remote_addr)
@@ -247,7 +277,25 @@ async def rtp_send_loop(
         seq = (seq + 1) & 0xFFFF
         timestamp = (timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
 
+        if stats:
+            stats.rtp_frames_sent += 1
+            if is_silence:
+                stats.rtp_silence_sent += 1
+            depth = discord_to_phone_queue.qsize()
+            if depth > stats.d2p_queue_depth_max:
+                stats.d2p_queue_depth_max = depth
+
         next_send += PTIME_MS / 1000.0
         sleep_dur = next_send - time.monotonic()
         if sleep_dur > 0:
             await asyncio.sleep(sleep_dur)
+            if stats:
+                overshoot = time.monotonic() - next_send
+                if overshoot > stats.rtp_max_sleep_overshoot:
+                    stats.rtp_max_sleep_overshoot = overshoot
+
+        if stats:
+            now = time.monotonic()
+            if now - last_summary >= 5.0:
+                stats.log_summary()
+                last_summary = now

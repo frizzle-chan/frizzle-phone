@@ -687,6 +687,7 @@ class SipServer(asyncio.DatagramProtocol):
             PhoneAudioSource,
             rtp_send_loop,
         )
+        from frizzle_phone.bridge_stats import BridgeStats
         from frizzle_phone.rtp.receive import RtpReceiveProtocol
 
         assert call.voice_client is not None
@@ -694,19 +695,20 @@ class SipServer(asyncio.DatagramProtocol):
 
         phone_q: queue_mod.Queue[bytes] = queue_mod.Queue(maxsize=50)
         discord_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+        stats = BridgeStats()
 
         # Bind RTP receive on the port we advertised in SDP
         rtp_transport, _ = await loop.create_datagram_endpoint(
-            lambda: RtpReceiveProtocol(phone_q),
+            lambda: RtpReceiveProtocol(phone_q, stats=stats),
             local_addr=("0.0.0.0", call.rtp_port),
         )
 
         # Phone → Discord
-        source = PhoneAudioSource(phone_q)
+        source = PhoneAudioSource(phone_q, stats=stats)
         call.voice_client.play(source)
 
         # Discord → Phone
-        sink = PhoneAudioSink(discord_q, loop)
+        sink = PhoneAudioSink(discord_q, loop, stats=stats)
         call.voice_client.listen(sink)
 
         # RTP send loop
@@ -717,6 +719,7 @@ class SipServer(asyncio.DatagramProtocol):
                 rtp_transport,
                 call.remote_rtp_addr,
                 stop_event=stop_event,
+                stats=stats,
             )
         )
         self._rtp_tasks.add(send_task)
