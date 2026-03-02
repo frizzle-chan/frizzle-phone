@@ -1,6 +1,5 @@
 import asyncio
 import queue
-import struct
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,22 +8,35 @@ from frizzle_phone.bridge import (
     SILENCE_FRAME,
     PhoneAudioSink,
     PhoneAudioSource,
+    _patched_callback,
     stereo_to_mono,
 )
+
+_SSRC = 12345
+_USER_ID = 42
+
+
+def _make_reader(*, dave_session=None, ssrc_map=None):
+    """Create a mocked AudioReader for _patched_callback tests."""
+    reader = MagicMock()
+    reader.error = None
+    reader.voice_client._ssrc_to_id = ssrc_map if ssrc_map is not None else {}
+    reader.voice_client._connection.dave_session = dave_session
+    return reader
 
 
 def test_stereo_to_mono_halves_length():
     stereo = b"\x00" * 3840  # 960 stereo samples
     mono = stereo_to_mono(stereo)
-    assert len(mono) == 1920  # 960 mono samples
+    assert isinstance(mono, np.ndarray)
+    assert len(mono) == 960  # 960 mono samples
 
 
 def test_stereo_to_mono_averages():
     """L=100, R=200 → mono=150."""
-    stereo = struct.pack("<hh", 100, 200)
+    stereo = np.array([100, 200], dtype=np.int16).tobytes()
     mono = stereo_to_mono(stereo)
-    sample = struct.unpack("<h", mono)[0]
-    assert sample == 150
+    assert mono[0] == 150
 
 
 def test_phone_audio_source_returns_queued_data():
@@ -91,8 +103,8 @@ def test_phone_audio_sink_mixes_multiple_speakers():
     # 960 stereo samples = 3840 bytes (20ms @ 48kHz)
     val_a = 1000
     val_b = 2000
-    stereo_a = struct.pack("<hh", val_a, val_a) * 960
-    stereo_b = struct.pack("<hh", val_b, val_b) * 960
+    stereo_a = np.array([val_a, val_a] * 960, dtype=np.int16).tobytes()
+    stereo_b = np.array([val_b, val_b] * 960, dtype=np.int16).tobytes()
 
     user_a = MagicMock()
     user_a.id = 1
@@ -132,3 +144,105 @@ def test_phone_audio_sink_mixes_multiple_speakers():
     # 960 mono samples @ 48kHz → 160 samples @ 8kHz = 160 bytes ulaw
     assert len(enqueued_ulaw) == 160
     assert enqueued_ulaw != b"\xff" * 160  # not silence
+
+
+# ---------------------------------------------------------------------------
+# _patched_callback DAVE edge-case unit tests
+# ---------------------------------------------------------------------------
+
+
+@patch("frizzle_phone.bridge.rtp")
+def test_patched_callback_dave_decryption(mock_rtp):
+    """DAVE session decrypts transport-decrypted payload via XOR mock."""
+    payload = b"\x01\x02\x03\x04" * 10
+    xor_key = 0xAA
+    encrypted = bytes(b ^ xor_key for b in payload)
+
+    dave_mock = MagicMock()
+    dave_mock.ready = True
+    dave_mock.decrypt.side_effect = lambda uid, _mt, data: bytes(
+        b ^ xor_key for b in data
+    )
+
+    reader = _make_reader(dave_session=dave_mock, ssrc_map={_SSRC: _USER_ID})
+    reader.decryptor.decrypt_rtp.return_value = encrypted
+
+    mock_packet = MagicMock()
+    mock_packet.ssrc = _SSRC
+    mock_packet.is_silence.return_value = False
+    mock_rtp.is_rtcp.return_value = False
+    mock_rtp.decode_rtp.return_value = mock_packet
+
+    _patched_callback(reader, b"\x00" * 20)
+
+    dave_mock.decrypt.assert_called_once()
+    assert mock_packet.decrypted_data == payload
+    reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
+
+
+@patch("frizzle_phone.bridge.rtp")
+def test_patched_callback_no_dave_session(mock_rtp):
+    """Without DAVE session, transport-decrypted payload passes through directly."""
+    payload = b"\xde\xad" * 20
+
+    reader = _make_reader(dave_session=None, ssrc_map={_SSRC: _USER_ID})
+    reader.decryptor.decrypt_rtp.return_value = payload
+
+    mock_packet = MagicMock()
+    mock_packet.ssrc = _SSRC
+    mock_packet.is_silence.return_value = False
+    mock_rtp.is_rtcp.return_value = False
+    mock_rtp.decode_rtp.return_value = mock_packet
+
+    _patched_callback(reader, b"\x00" * 20)
+
+    assert mock_packet.decrypted_data == payload
+    reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
+
+
+@patch("frizzle_phone.bridge.rtp")
+def test_patched_callback_dave_not_ready(mock_rtp):
+    """DAVE session exists but not ready — bypass decryption."""
+    payload = b"\xbe\xef" * 20
+
+    dave_mock = MagicMock()
+    dave_mock.ready = False
+
+    reader = _make_reader(dave_session=dave_mock, ssrc_map={_SSRC: _USER_ID})
+    reader.decryptor.decrypt_rtp.return_value = payload
+
+    mock_packet = MagicMock()
+    mock_packet.ssrc = _SSRC
+    mock_packet.is_silence.return_value = False
+    mock_rtp.is_rtcp.return_value = False
+    mock_rtp.decode_rtp.return_value = mock_packet
+
+    _patched_callback(reader, b"\x00" * 20)
+
+    dave_mock.decrypt.assert_not_called()
+    assert mock_packet.decrypted_data == payload
+    reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
+
+
+@patch("frizzle_phone.bridge.rtp")
+def test_patched_callback_dave_unknown_ssrc(mock_rtp):
+    """DAVE ready but SSRC not mapped — skip DAVE decrypt, use transport decrypted."""
+    payload = b"\xca\xfe" * 20
+
+    dave_mock = MagicMock()
+    dave_mock.ready = True
+
+    reader = _make_reader(dave_session=dave_mock, ssrc_map={})
+    reader.decryptor.decrypt_rtp.return_value = payload
+
+    mock_packet = MagicMock()
+    mock_packet.ssrc = 99999  # not in map
+    mock_packet.is_silence.return_value = False
+    mock_rtp.is_rtcp.return_value = False
+    mock_rtp.decode_rtp.return_value = mock_packet
+
+    _patched_callback(reader, b"\x00" * 20)
+
+    dave_mock.decrypt.assert_not_called()
+    assert mock_packet.decrypted_data == payload
+    reader.packet_router.feed_rtp.assert_called_once_with(mock_packet)
