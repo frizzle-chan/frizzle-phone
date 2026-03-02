@@ -1,19 +1,21 @@
 """Tests for SIP server request handling."""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
 
+from frizzle_phone.bridge_manager import BridgeHandle
 from frizzle_phone.sip.message import parse_message
-from frizzle_phone.sip.server import SipServer
+from frizzle_phone.sip.server import Call, DiscordBridgeContext, SipServer
 from frizzle_phone.sip.transaction import TxnState
 
 from .conftest import FakeTransport
 
 
 async def _drain() -> None:
-    """Yield enough event loop time for ensure_future DB tasks to complete."""
+    """Yield enough event loop time for background DB tasks to complete."""
     await asyncio.sleep(0.05)
 
 
@@ -53,6 +55,7 @@ def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
         server_ip="10.0.0.2",
         pool=pool,
         audio_buffers={"techno": b"\xff" * 160},
+        bot=MagicMock(),
     )
     transport = FakeTransport()
     server.connection_made(transport)
@@ -139,3 +142,48 @@ async def test_unknown_extension_returns_404(pool):
     data, _addr = transport.sent[0]
     text = data.decode()
     assert "404 Not Found" in text
+
+
+@pytest.mark.asyncio
+async def test_voice_disconnect_sends_bye(pool):
+    """Voice client disconnection triggers BYE to phone."""
+    server, transport = _make_server(pool)
+
+    # Build a Call with an active discord bridge
+    vc = MagicMock()
+    vc.is_connected.return_value = True
+    vc.stop = MagicMock()
+    vc.disconnect = AsyncMock()
+
+    handle = BridgeHandle(
+        stop_event=asyncio.Event(),
+        send_task=MagicMock(),
+        rtp_transport=MagicMock(),
+        voice_client=vc,
+        sink=MagicMock(),
+    )
+
+    call = Call(
+        call_id="dc-test@10.0.0.1",
+        from_tag="abc",
+        to_tag="xyz",
+        remote_addr=ADDR,
+        remote_contact=f"sip:phone@{ADDR[0]}:{ADDR[1]}",
+        remote_from="<sip:phone@10.0.0.1>",
+        remote_rtp_addr=("10.0.0.1", 20000),
+    )
+    call.discord_bridge = DiscordBridgeContext(
+        voice_client=vc, guild_id=1, channel_id=2, handle=handle
+    )
+    server._calls[call.call_id] = call
+
+    # Simulate: first poll connected, second poll disconnected
+    vc.is_connected.side_effect = [True, False]
+
+    with patch("frizzle_phone.sip.server.asyncio.sleep", new_callable=AsyncMock):
+        await server._monitor_voice_connection(call)
+
+    # Call should be terminated with BYE sent
+    assert call.terminated
+    bye_messages = [d.decode() for d, _a in transport.sent if b"BYE" in d]
+    assert len(bye_messages) == 1

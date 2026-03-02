@@ -199,3 +199,6 @@ img-dist/
 
 # Dev server PID file
 frizzle-phone.pid
+
+# Git worktrees
+.worktrees/

@@ -1,15 +1,29 @@
 """SIP UDP server with call state management."""
 
+# TODO(arch): SipServer currently handles 6 responsibilities that should
+# eventually be extracted into focused modules:
+#   1. SIP protocol parsing/routing (datagram_received, handler dispatch)
+#   2. SIP transaction lifecycle (INVITE txn setup, Timer G/H/I)
+#   3. Database persistence (INSERT/UPDATE via asyncpg)
+#   4. Discord voice channel orchestration (guild/channel lookup, voice connect)
+#   5. Call state management (Call lifecycle, _PendingBridge → DiscordBridgeContext)
+#   6. RTP port reservation and stream lifecycle
+# Extraction order: start with (3) as a CallRepository, then (4) as a
+# VoiceConnector, leaving SIP protocol core in SipServer.
+
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import logging
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 
 import asyncpg
+import discord
+from discord.ext import commands, voice_recv
 
+from frizzle_phone.bridge_manager import BridgeHandle, BridgeManager
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
     SipMessage,
@@ -104,6 +118,25 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
 
 
 @dataclasses.dataclass
+class PendingBridge:
+    """Transient state between INVITE (voice connect) and ACK (bridge start)."""
+
+    voice_client: voice_recv.VoiceRecvClient
+    guild_id: int
+    channel_id: int
+
+
+@dataclasses.dataclass
+class DiscordBridgeContext:
+    """Active Discord voice bridge state."""
+
+    voice_client: voice_recv.VoiceRecvClient
+    guild_id: int
+    channel_id: int
+    handle: BridgeHandle
+
+
+@dataclasses.dataclass
 class Call:
     call_id: str
     from_tag: str
@@ -112,23 +145,36 @@ class Call:
     remote_contact: str
     remote_from: str
     remote_rtp_addr: tuple[str, int]
-    audio_buf: bytes
+    audio_buf: bytes | None = None
     rtp_port: int = 0
     rtp_stream: RtpStream | None = None
     invite_request: SipMessage | None = None
     invite_branch: str | None = None
     terminated: bool = False
     db_call_id: str | None = None
+    # Discord voice bridge state
+    pending_bridge: PendingBridge | None = None
+    discord_bridge: DiscordBridgeContext | None = None
+
+
+@dataclasses.dataclass
+class _ExtensionResult:
+    """Resolved extension parameters from DB lookup."""
+
+    audio_buf: bytes | None = None
+    guild_id: int | None = None
+    channel_id: int | None = None
+
+
+class _BusyError(Exception):
+    """Raised when the caller already has an active Discord call."""
 
 
 def get_server_ip() -> str:
     """Detect the local IP address by opening a UDP socket."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
-    finally:
-        sock.close()
 
 
 class SipServer(asyncio.DatagramProtocol):
@@ -140,14 +186,20 @@ class SipServer(asyncio.DatagramProtocol):
         server_ip: str,
         pool: asyncpg.Pool,
         audio_buffers: dict[str, bytes],
+        bot: commands.Bot,
+        bridge_manager: BridgeManager | None = None,
     ) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
         self._invite_txns: dict[str, InviteServerTxn] = {}
         self._rtp_tasks: set[asyncio.Task[None]] = set()
+        self._bg_tasks: set[asyncio.Task[object]] = set()
         self._server_ip = server_ip
         self._pool = pool
         self._audio_buffers = audio_buffers
+        self._bot = bot
+        self._bridge_manager = bridge_manager or BridgeManager()
+        self._db_update_errors: int = 0
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -155,9 +207,9 @@ class SipServer(asyncio.DatagramProtocol):
             "BYE": self._handle_bye,
             "CANCEL": self._handle_cancel,
             "OPTIONS": self._handle_options,
-            "REFER": self._handle_stub_200,
-            "SUBSCRIBE": self._handle_stub_200,
-            "NOTIFY": self._handle_stub_200,
+            "REFER": self._handle_noop_200,
+            "SUBSCRIBE": self._handle_noop_200,
+            "NOTIFY": self._handle_noop_200,
         }
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -245,6 +297,21 @@ class SipServer(asyncio.DatagramProtocol):
         call.terminated = True
         if call.rtp_stream is not None:
             call.rtp_stream.stop()
+        if call.discord_bridge is not None:
+            ctx = call.discord_bridge
+            ctx.handle.stop()
+            self._fire_and_forget(
+                ctx.voice_client.disconnect(),
+                name=f"vc-disconnect-{call.call_id}",
+            )
+            call.discord_bridge = None
+        elif call.pending_bridge is not None:
+            call.pending_bridge.voice_client.stop()
+            self._fire_and_forget(
+                call.pending_bridge.voice_client.disconnect(),
+                name=f"vc-disconnect-{call.call_id}",
+            )
+            call.pending_bridge = None
         if call.invite_branch:
             txn = self._invite_txns.pop(call.invite_branch, None)
             if txn is not None:
@@ -339,7 +406,49 @@ class SipServer(asyncio.DatagramProtocol):
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
-        asyncio.ensure_future(self._handle_invite_async(msg, addr, resp_addr))
+        self._fire_and_forget(
+            self._handle_invite_async(msg, addr, resp_addr), name="invite"
+        )
+
+    async def _resolve_extension(
+        self, extension: str, caller_addr: str
+    ) -> _ExtensionResult | None:
+        """Resolve an extension to its call parameters.
+
+        Returns an ``_ExtensionResult`` when the extension is valid and
+        available, or ``None`` when not found.  Raises ``_BusyError``
+        when the caller already has an active Discord call.
+        """
+        # Check discord_extensions first
+        row = await self._pool.fetchrow(
+            "SELECT guild_id, channel_id FROM discord_extensions WHERE extension = $1",
+            extension,
+        )
+        if row is not None:
+            guild_id: int = row["guild_id"]
+            channel_id: int = row["channel_id"]
+
+            # App-layer check: one active discord call per phone
+            existing_call = await self._pool.fetchrow(
+                "SELECT id FROM calls WHERE caller_addr = $1"
+                " AND status IN ('ringing', 'active') AND guild_id IS NOT NULL",
+                caller_addr,
+            )
+            if existing_call is not None:
+                raise _BusyError(caller_addr)
+            return _ExtensionResult(guild_id=guild_id, channel_id=channel_id)
+
+        # Check audio_extensions
+        audio_row = await self._pool.fetchrow(
+            "SELECT audio_name FROM audio_extensions WHERE extension = $1",
+            extension,
+        )
+        if audio_row is not None:
+            audio_buf = self._audio_buffers.get(audio_row["audio_name"])
+            if audio_buf is not None:
+                return _ExtensionResult(audio_buf=audio_buf)
+
+        return None
 
     async def _handle_invite_async(
         self,
@@ -352,46 +461,19 @@ class SipServer(asyncio.DatagramProtocol):
         extension = extract_extension(msg.uri)
         caller_addr = f"{addr[0]}:{addr[1]}"
 
-        audio_buf: bytes | None = None
-        guild_id: int | None = None
-        channel_id: int | None = None
-
-        # Check discord_extensions first
-        row = await self._pool.fetchrow(
-            "SELECT guild_id, channel_id FROM discord_extensions WHERE extension = $1",
-            extension,
-        )
-        if row is not None:
-            guild_id = row["guild_id"]
-            channel_id = row["channel_id"]
-            # Discord extensions use the first available audio buffer
-            audio_buf = next(iter(self._audio_buffers.values()), None)
-
-            # App-layer check: one active discord call per phone
-            existing_call = await self._pool.fetchrow(
-                "SELECT id FROM calls WHERE caller_addr = $1"
-                " AND status IN ('ringing', 'active') AND guild_id IS NOT NULL",
-                caller_addr,
+        try:
+            result = await self._resolve_extension(extension, caller_addr)
+        except _BusyError:
+            logger.info(
+                "Caller %s already has an active discord call → 486", caller_addr
             )
-            if existing_call is not None:
-                logger.info(
-                    "Caller %s already has an active discord call → 486", caller_addr
-                )
-                self._send(
-                    build_response(msg, 486, "Busy Here", to_tag=generate_tag()),
-                    resp_addr,
-                )
-                return
-        else:
-            # Check audio_extensions
-            audio_row = await self._pool.fetchrow(
-                "SELECT audio_name FROM audio_extensions WHERE extension = $1",
-                extension,
+            self._send(
+                build_response(msg, 486, "Busy Here", to_tag=generate_tag()),
+                resp_addr,
             )
-            if audio_row is not None:
-                audio_buf = self._audio_buffers.get(audio_row["audio_name"])
+            return
 
-        if audio_buf is None:
+        if result is None:
             logger.info("Unknown extension %r → 404", extension)
             self._send(
                 build_response(msg, 404, "Not Found", to_tag=generate_tag()),
@@ -405,10 +487,18 @@ class SipServer(asyncio.DatagramProtocol):
                 msg.header("Call-ID") or "",
                 extension,
                 caller_addr,
-                guild_id,
-                channel_id,
+                None,
+                None,
             )
             return
+
+        # RFC 3261 §17.2.1: send 100 Trying to quench INVITE
+        # retransmissions.  Sent after extension validation (need to
+        # 404/486 first) but before DB writes and Discord voice connect
+        # which may take significant time.  §17.2.1: tag insertion in
+        # the To field of 100 is downgraded from MAY to SHOULD NOT, so
+        # no to_tag here.
+        self._send(build_response(msg, 100, "Trying"), resp_addr)
 
         call_id, from_tag, remote_rtp_addr, remote_contact, remote_from = (
             self._parse_invite_params(msg, addr)
@@ -431,11 +521,11 @@ class SipServer(asyncio.DatagramProtocol):
             call_id,
             extension,
             caller_addr,
-            guild_id,
-            channel_id,
+            result.guild_id,
+            result.channel_id,
         )
 
-        rtp_port = self._reserve_rtp_port()
+        rtp_port = await self._reserve_rtp_port()
         call = Call(
             call_id=call_id,
             from_tag=from_tag,
@@ -444,18 +534,53 @@ class SipServer(asyncio.DatagramProtocol):
             remote_contact=remote_contact,
             remote_from=remote_from,
             remote_rtp_addr=remote_rtp_addr,
-            audio_buf=audio_buf,
+            audio_buf=result.audio_buf,
             rtp_port=rtp_port,
             invite_request=msg,
             db_call_id=str(db_call_id) if db_call_id else None,
         )
         self._calls[call_id] = call
 
-        # RFC 3261 §17.2.1: send 100 Trying immediately to quench
-        # INVITE retransmissions. §17.2.1: tag insertion in the To
-        # field of 100 is downgraded from MAY to SHOULD NOT, so no
-        # to_tag here.
-        self._send(build_response(msg, 100, "Trying"), resp_addr)
+        # Discord extension: join voice channel before sending 200 OK
+        if result.guild_id is not None:
+            if result.channel_id is None:
+                raise ValueError("Discord extension missing channel_id")
+            guild = self._bot.get_guild(result.guild_id)
+            if guild is None:
+                self._calls.pop(call_id, None)
+                self._send(
+                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
+                    resp_addr,
+                )
+                return
+            channel = guild.get_channel(result.channel_id)
+            if channel is None or not isinstance(channel, discord.VoiceChannel):
+                self._calls.pop(call_id, None)
+                self._send(
+                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
+                    resp_addr,
+                )
+                return
+            try:
+                vc = await asyncio.wait_for(
+                    channel.connect(cls=voice_recv.VoiceRecvClient),
+                    timeout=10.0,
+                )
+                call.pending_bridge = PendingBridge(
+                    voice_client=vc,
+                    guild_id=result.guild_id,
+                    channel_id=result.channel_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to connect to voice channel %s", result.channel_id
+                )
+                self._calls.pop(call_id, None)
+                self._send(
+                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
+                    resp_addr,
+                )
+                return
 
         # RFC 3261 §13.3.1.4: 2xx response with SDP answer establishes
         # the session. Contact header required per §12.1.1 so the peer
@@ -498,12 +623,24 @@ class SipServer(asyncio.DatagramProtocol):
         if call.invite_branch and call.invite_branch in self._invite_txns:
             self._invite_txns[call.invite_branch].receive_ack()
 
-        if call.rtp_stream is None:
+        # Guard against duplicate ACKs
+        if call.rtp_stream is not None or call.discord_bridge is not None:
+            return
+
+        if call.pending_bridge is not None:
+            # Discord call → start bridge
+            self._fire_and_forget(
+                self._start_discord_bridge(call), name=f"bridge-{call.call_id}"
+            )
+        elif call.audio_buf is not None:
+            # Audio call → existing playback path
             self._start_rtp_for_call(call)
-            if call.db_call_id:
-                asyncio.ensure_future(
-                    self._update_call_status(call.db_call_id, "active")
-                )
+
+        if call.db_call_id:
+            self._fire_and_forget(
+                self._update_call_status(call.db_call_id, "active"),
+                name=f"db-active-{call.call_id}",
+            )
 
     def _handle_bye(
         self,
@@ -521,8 +658,9 @@ class SipServer(asyncio.DatagramProtocol):
             return
         self._terminate_call(call)
         if call.db_call_id:
-            asyncio.ensure_future(
-                self._update_call_status(call.db_call_id, "completed")
+            self._fire_and_forget(
+                self._update_call_status(call.db_call_id, "completed"),
+                name=f"db-completed-{call.call_id}",
             )
         # RFC 3261 §15.1.2: UAS MUST generate a 2xx response to a
         # valid BYE and pass it to the server transaction.
@@ -574,7 +712,10 @@ class SipServer(asyncio.DatagramProtocol):
             self._send(terminated, resp_addr)
         self._terminate_call(call)
         if call.db_call_id:
-            asyncio.ensure_future(self._update_call_status(call.db_call_id, "failed"))
+            self._fire_and_forget(
+                self._update_call_status(call.db_call_id, "failed"),
+                name=f"db-failed-{call.call_id}",
+            )
 
     def _handle_options(
         self,
@@ -596,27 +737,79 @@ class SipServer(asyncio.DatagramProtocol):
         )
         self._send(response, resp_addr)
 
-    def _handle_stub_200(
+    def _handle_noop_200(
         self,
         msg: SipMessage,
         addr: tuple[str, int],
         resp_addr: tuple[str, int],
     ) -> None:
-        """Accept REFER/SUBSCRIBE/NOTIFY with a simple 200 OK."""
+        """Acknowledge REFER/SUBSCRIBE/NOTIFY with 200 OK (no-op processing)."""
         response = build_response(msg, 200, "OK", to_tag=generate_tag())
         self._send(response, resp_addr)
 
-    @staticmethod
-    def _reserve_rtp_port() -> int:
-        """Bind a UDP socket to get an OS-assigned port, then release it."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("0.0.0.0", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-        return port
+    async def _reserve_rtp_port(self) -> int:
+        """Bind a UDP socket to get an OS-assigned port, then release it.
+
+        Note: TOCTOU race — the port is released before the RTP stream
+        binds to it, so another process could claim it in between.  In
+        practice this is rare on ephemeral ports, but callers should be
+        prepared for bind failures.
+        """
+
+        def _bind() -> int:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.bind(("0.0.0.0", 0))  # noqa: S104
+                return sock.getsockname()[1]
+
+        return await asyncio.get_running_loop().run_in_executor(None, _bind)
+
+    async def _start_discord_bridge(self, call: Call) -> None:
+        """Set up bidirectional audio bridge for a discord call."""
+        if call.pending_bridge is None:
+            raise RuntimeError("Cannot start bridge without pending_bridge")
+        pb = call.pending_bridge
+        handle = await self._bridge_manager.start(
+            pb.voice_client, call.rtp_port, call.remote_rtp_addr
+        )
+        call.discord_bridge = DiscordBridgeContext(
+            voice_client=pb.voice_client,
+            guild_id=pb.guild_id,
+            channel_id=pb.channel_id,
+            handle=handle,
+        )
+        call.pending_bridge = None
+        self._fire_and_forget(
+            self._monitor_voice_connection(call),
+            name=f"vc-monitor-{call.call_id}",
+        )
+
+    async def _monitor_voice_connection(self, call: Call) -> None:
+        """Detect Discord voice disconnection and send BYE to phone.
+
+        Polls voice_client.is_connected() every 5s. If the connection drops
+        (network issue, server migration), sends BYE so the phone caller
+        isn't left listening to silence indefinitely.
+        """
+        while not call.terminated:
+            await asyncio.sleep(5.0)
+            ctx = call.discord_bridge
+            if ctx is None:
+                return
+            if not ctx.voice_client.is_connected():
+                logger.warning(
+                    "Discord voice disconnected for call %s "
+                    "(guild=%s channel=%s), sending BYE",
+                    call.call_id,
+                    ctx.guild_id,
+                    ctx.channel_id,
+                )
+                self._send_bye(call)
+                return
 
     def _start_rtp_for_call(self, call: Call) -> None:
         """Create an RTP stream for the call and schedule BYE on completion."""
+        if call.audio_buf is None:
+            return
         loop = asyncio.get_running_loop()
         call.rtp_stream = RtpStream(
             loop=loop,
@@ -636,8 +829,9 @@ class SipServer(asyncio.DatagramProtocol):
             return
         self._terminate_call(call)
         if call.db_call_id:
-            asyncio.ensure_future(
-                self._update_call_status(call.db_call_id, "completed")
+            self._fire_and_forget(
+                self._update_call_status(call.db_call_id, "completed"),
+                name=f"db-completed-{call.call_id}",
             )
 
         call_id = call.call_id
@@ -671,6 +865,44 @@ class SipServer(asyncio.DatagramProtocol):
         self._send(bye_msg, remote_addr)
         logger.info("Sent BYE for call %s", call_id)
 
+    def hangup_by_voice_channel(self, guild_id: int, channel_id: int) -> None:
+        """Hang up the SIP call bridged to a Discord voice channel."""
+        for call in list(self._calls.values()):
+            ctx = call.discord_bridge
+            if (
+                ctx is not None
+                and ctx.guild_id == guild_id
+                and ctx.channel_id == channel_id
+            ):
+                self._send_bye(call)
+                return
+            pb = call.pending_bridge
+            if (
+                pb is not None
+                and pb.guild_id == guild_id
+                and pb.channel_id == channel_id
+            ):
+                self._send_bye(call)
+                return
+
+    def _fire_and_forget(
+        self, coro: Coroutine[object, object, object], *, name: str
+    ) -> None:
+        """Schedule a coroutine as a background task with error logging."""
+        task = asyncio.get_running_loop().create_task(coro, name=name)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        task.add_done_callback(SipServer._log_task_exception)
+
+    @staticmethod
+    def _log_task_exception(task: asyncio.Task[object]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Background task %r failed",
+                task.get_name(),
+                exc_info=task.exception(),
+            )
+
     async def _update_call_status(self, db_call_id: str, status: str) -> None:
         """Update a call's status in the database."""
         try:
@@ -687,7 +919,13 @@ class SipServer(asyncio.DatagramProtocol):
                     db_call_id,
                 )
         except Exception:
-            logger.exception("Failed to update call %s to %s", db_call_id, status)
+            self._db_update_errors += 1
+            logger.exception(
+                "Failed to update call %s to %s (total db errors: %d)",
+                db_call_id,
+                status,
+                self._db_update_errors,
+            )
 
     def _remove_txn(self, branch: str) -> None:
         """Callback for transaction cleanup after termination."""
@@ -716,6 +954,10 @@ class SipServer(asyncio.DatagramProtocol):
         for task in self._rtp_tasks:
             task.cancel()
         self._rtp_tasks.clear()
+        self._bridge_manager.shutdown()
+        for task in self._bg_tasks:
+            task.cancel()
+        self._bg_tasks.clear()
 
 
 async def start_server(
@@ -725,9 +967,12 @@ async def start_server(
     server_ip: str,
     pool: asyncpg.Pool,
     audio_buffers: dict[str, bytes],
+    bot: commands.Bot,
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(server_ip=server_ip, pool=pool, audio_buffers=audio_buffers)
+    server = SipServer(
+        server_ip=server_ip, pool=pool, audio_buffers=audio_buffers, bot=bot
+    )
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )

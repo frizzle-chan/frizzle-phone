@@ -12,7 +12,7 @@ RUN groupadd --gid 1000 frizzle_phone \
  && chown frizzle_phone:frizzle_phone /app
 
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl locales \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl libopus0 locales \
  && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
  && locale-gen \
  && apt-get clean \
@@ -31,6 +31,8 @@ ENV LANG=en_US.UTF-8 \
     PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=random \
     PATH=/app/.venv/bin:/home/frizzle_phone/.local/bin:$PATH
+
+RUN mkdir -p /home/frizzle_phone/.cache
 
 # Install dependencies
 RUN --mount=type=cache,target=/home/frizzle_phone/.cache/uv,uid=1000,gid=1000 \

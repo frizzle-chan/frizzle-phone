@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -147,6 +148,7 @@ async def sip_endpoint(seeded_pool: asyncpg.Pool):
         server_ip="127.0.0.1",
         pool=seeded_pool,
         audio_buffers={"techno": b"\x7f" * 160},
+        bot=MagicMock(),
     )
     _, port = transport.get_extra_info("sockname")
     yield transport, server, port

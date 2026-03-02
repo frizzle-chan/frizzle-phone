@@ -65,3 +65,17 @@ Lefthook runs ruff, ty, vulture, squawk, and pytest on pre-commit. Direct commit
 - Repo does not allow merge commits (use squash merge)
 - GitHub Actions pins dependencies by SHA with version comments
 - SIP code (`src/frizzle_phone/sip/`) is annotated with RFC section references — when modifying SIP logic, cite the relevant RFC section (e.g. `# RFC 3261 §17.2.1: ...`). Use the `/rfc-sip-lookup` skill to find the correct sections.
+
+## Audio Bridge Diagnostics
+
+`BridgeStats` emits periodic `"bridge stats"` lines to `frizzle-phone.log` every ~5s during active calls. Grep for `bridge stats` or `bridge d2p` / `bridge p2d` to find them.
+
+| Symptom in logs | Likely cause |
+|---|---|
+| `d2p_queue_overflow > 0` | RTP send loop falling behind |
+| `rtp_silence_sent` high | Discord not delivering audio frames |
+| `d2p_stale_flush` high | Intermittent Discord voice with >60ms gaps |
+| `rtp_max_sleep_overshoot > 5ms` | Event loop congestion |
+| `p2d_queue_overflow > 0` | Discord `read()` not keeping up |
+| `p2d_silence_reads` high, `p2d_frames_in` normal | Phone audio arriving in bursts (jitter) |
+| `p2d_silence_reads` high, `p2d_frames_in` low | Phone not sending RTP |
