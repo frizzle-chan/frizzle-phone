@@ -13,13 +13,10 @@ from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 logger = logging.getLogger(__name__)
 
 
-def _mono_to_stereo(mono: bytes) -> bytes:
-    """Duplicate mono s16le samples to stereo (interleaved L=R)."""
-    out = bytearray(len(mono) * 2)
-    for i in range(0, len(mono), 2):
-        out[i * 2 : i * 2 + 2] = mono[i : i + 2]
-        out[i * 2 + 2 : i * 2 + 4] = mono[i : i + 2]
-    return bytes(out)
+def _mono_to_stereo(mono: np.ndarray) -> bytes:
+    """Duplicate mono int16 samples to stereo (interleaved L=R)."""
+    stereo = np.column_stack((mono, mono))
+    return stereo.astype(np.int16).tobytes()
 
 
 class RtpReceiveProtocol(asyncio.DatagramProtocol):
@@ -50,10 +47,9 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         pcm_8k = ulaw_to_pcm(payload)
         # Resample 8kHz → 48kHz
         arr_8k = np.frombuffer(pcm_8k, dtype=np.int16)
-        arr_48k = soxr.resample(arr_8k, 8000, 48000)
-        pcm_48k = arr_48k.astype(np.int16).tobytes()
+        arr_48k = soxr.resample(arr_8k, 8000, 48000).astype(np.int16)
         # Mono → stereo
-        stereo = _mono_to_stereo(pcm_48k)
+        stereo = _mono_to_stereo(arr_48k)
 
         # Enqueue for Discord (drop oldest on overflow)
         try:

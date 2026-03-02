@@ -5,15 +5,18 @@ import contextlib
 import logging
 import queue
 import random
-import struct
 import time
 
+import davey
 import discord
 import numpy as np
 import soxr
 from discord.ext import voice_recv
+from discord.ext.voice_recv import rtp
+from discord.ext.voice_recv.reader import AudioReader
 from discord.ext.voice_recv.router import PacketRouter
 from discord.opus import OpusError
+from nacl.exceptions import CryptoError
 
 from frizzle_phone.rtp.pcmu import pcm16_to_ulaw
 from frizzle_phone.rtp.stream import PTIME_MS, SAMPLES_PER_PACKET, build_rtp_packet
@@ -44,18 +47,82 @@ def _patched_do_run(self: PacketRouter) -> None:
 
 PacketRouter._do_run = _patched_do_run  # type: ignore[assignment]
 
+
+def _patched_callback(self: AudioReader, packet_data: bytes) -> None:
+    """AudioReader.callback with DAVE decryption injected.
+
+    After transport-layer decryption, applies DAVE decryption using the
+    davey session from the voice connection before opus decode.
+    """
+    packet = rtp_packet = rtcp_packet = None
+    try:
+        if not rtp.is_rtcp(packet_data):
+            packet = rtp_packet = rtp.decode_rtp(packet_data)
+            transport_decrypted = self.decryptor.decrypt_rtp(packet)
+
+            # DAVE decryption (if enabled)
+            dave_session = self.voice_client._connection.dave_session
+            if dave_session and dave_session.ready:
+                uid = self.voice_client._ssrc_to_id.get(packet.ssrc)
+                if uid is not None:
+                    packet.decrypted_data = dave_session.decrypt(
+                        uid, davey.MediaType.audio, transport_decrypted
+                    )
+                else:
+                    packet.decrypted_data = transport_decrypted
+            else:
+                packet.decrypted_data = transport_decrypted
+        else:
+            packet = rtcp_packet = rtp.decode_rtcp(
+                self.decryptor.decrypt_rtcp(packet_data)
+            )
+            if not isinstance(packet, rtp.ReceiverReportPacket):
+                logger.debug("Unexpected RTCP packet: type=%s", packet.type)
+    except CryptoError:
+        logger.debug("CryptoError decoding packet")
+        return
+    except Exception:
+        if len(packet_data) == 74 and packet_data[1] == 0x02:
+            return  # IP discovery packet
+        logger.exception("Error unpacking packet")
+        return
+
+    if self.error:
+        self.stop()
+        return
+    if not packet:
+        return
+
+    if rtcp_packet:
+        self.packet_router.feed_rtcp(rtcp_packet)
+    elif rtp_packet:
+        if (
+            rtp_packet.ssrc not in self.voice_client._ssrc_to_id
+            and rtp_packet.is_silence()
+        ):
+            return
+        self.speaking_timer.notify(rtp_packet.ssrc)
+        try:
+            self.packet_router.feed_rtp(rtp_packet)
+        except Exception as e:
+            logger.exception("Error processing rtp packet")
+            self.error = e
+            self.stop()
+
+
+AudioReader.callback = _patched_callback  # type: ignore[assignment]
+
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
 
+_OVERLAP = 240  # samples at 48kHz (5ms of filter context)
+_OVERLAP_OUT = 40  # corresponding output samples at 8kHz (240 * 8000 // 48000)
 
-def stereo_to_mono(data: bytes) -> bytes:
-    """Convert 48kHz stereo s16le PCM to mono by averaging L+R."""
-    n_samples = len(data) // 2
-    samples = struct.unpack(f"<{n_samples}h", data)
-    mono = []
-    for i in range(0, n_samples, 2):
-        mono.append((samples[i] + samples[i + 1] + 1) // 2)
-    return struct.pack(f"<{len(mono)}h", *mono)
+
+def stereo_to_mono(data: bytes) -> np.ndarray:
+    """Convert 48kHz stereo s16le PCM to mono int16 array."""
+    stereo = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
+    return stereo.mean(axis=1).astype(np.int16)
 
 
 class PhoneAudioSource(discord.AudioSource):
@@ -105,6 +172,7 @@ class PhoneAudioSink(voice_recv.AudioSink):
         self._loop = loop
         self._pending_frames: dict[int, np.ndarray] = {}
         self._mix_start_time: float = 0.0
+        self._overlap = np.zeros(_OVERLAP, dtype=np.int16)
 
     def wants_opus(self) -> bool:
         return False
@@ -123,8 +191,11 @@ class PhoneAudioSink(voice_recv.AudioSink):
             dtype=np.int32,
         )
         mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
-        arr_8k = soxr.resample(mixed, 48000, 8000)
-        ulaw_payload = pcm16_to_ulaw(arr_8k.astype(np.int16).tobytes())
+        extended = np.concatenate([self._overlap, mixed])
+        arr_8k = soxr.resample(extended, 48000, 8000).astype(np.int16)
+        arr_8k = arr_8k[_OVERLAP_OUT:]
+        self._overlap = mixed[-_OVERLAP:].copy()
+        ulaw_payload = pcm16_to_ulaw(arr_8k.tobytes())
         self._loop.call_soon_threadsafe(self._enqueue, ulaw_payload)
 
     def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
@@ -133,8 +204,10 @@ class PhoneAudioSink(voice_recv.AudioSink):
         if self._pending_frames:
             age = now - self._mix_start_time
             if age > _MIX_STALE_THRESHOLD:
-                # Stale batch after silence gap — discard without sending
+                # Stale batch after silence gap — flush then discard
+                self._flush_mix()
                 self._pending_frames.clear()
+                self._overlap = np.zeros(_OVERLAP, dtype=np.int16)
             elif age > _MIX_BATCH_THRESHOLD:
                 self._flush_mix()
                 self._pending_frames.clear()
@@ -142,9 +215,8 @@ class PhoneAudioSink(voice_recv.AudioSink):
         if not self._pending_frames:
             self._mix_start_time = now
 
-        mono = stereo_to_mono(data.pcm)
         user_key = user.id if user is not None else 0
-        self._pending_frames[user_key] = np.frombuffer(mono, dtype=np.int16)
+        self._pending_frames[user_key] = stereo_to_mono(data.pcm)
 
     def cleanup(self) -> None:
         self._flush_mix()
