@@ -115,9 +115,6 @@ AudioReader.callback = _patched_callback  # type: ignore[assignment]
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
 
-_OVERLAP = 240  # samples at 48kHz (5ms of filter context)
-_OVERLAP_OUT = 40  # corresponding output samples at 8kHz (240 * 8000 // 48000)
-
 
 def stereo_to_mono(data: bytes) -> np.ndarray:
     """Convert 48kHz stereo s16le PCM to mono int16 array."""
@@ -172,7 +169,9 @@ class PhoneAudioSink(voice_recv.AudioSink):
         self._loop = loop
         self._pending_frames: dict[int, np.ndarray] = {}
         self._mix_start_time: float = 0.0
-        self._overlap = np.zeros(_OVERLAP, dtype=np.int16)
+        self._resampler = soxr.ResampleStream(
+            48000, 8000, 1, dtype="int16", quality=soxr.QQ
+        )
 
     def wants_opus(self) -> bool:
         return False
@@ -191,10 +190,7 @@ class PhoneAudioSink(voice_recv.AudioSink):
             dtype=np.int32,
         )
         mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
-        extended = np.concatenate([self._overlap, mixed])
-        arr_8k = soxr.resample(extended, 48000, 8000).astype(np.int16)
-        arr_8k = arr_8k[_OVERLAP_OUT:]
-        self._overlap = mixed[-_OVERLAP:].copy()
+        arr_8k = self._resampler.resample_chunk(mixed)
         ulaw_payload = pcm16_to_ulaw(arr_8k.tobytes())
         self._loop.call_soon_threadsafe(self._enqueue, ulaw_payload)
 
@@ -207,7 +203,9 @@ class PhoneAudioSink(voice_recv.AudioSink):
                 # Stale batch after silence gap — flush then discard
                 self._flush_mix()
                 self._pending_frames.clear()
-                self._overlap = np.zeros(_OVERLAP, dtype=np.int16)
+                self._resampler = soxr.ResampleStream(
+                    48000, 8000, 1, dtype="int16", quality=soxr.QQ
+                )
             elif age > _MIX_BATCH_THRESHOLD:
                 self._flush_mix()
                 self._pending_frames.clear()

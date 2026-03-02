@@ -25,6 +25,9 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
     def __init__(self, phone_to_discord_queue: queue.Queue[bytes]) -> None:
         self._queue = phone_to_discord_queue
         self._transport: asyncio.DatagramTransport | None = None
+        self._resampler = soxr.ResampleStream(
+            8000, 48000, 1, dtype="int16", quality=soxr.QQ
+        )
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self._transport = transport  # type: ignore[assignment]
@@ -47,7 +50,7 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         pcm_8k = ulaw_to_pcm(payload)
         # Resample 8kHz → 48kHz
         arr_8k = np.frombuffer(pcm_8k, dtype=np.int16)
-        arr_48k = soxr.resample(arr_8k, 8000, 48000).astype(np.int16)
+        arr_48k = self._resampler.resample_chunk(arr_8k)
         # Mono → stereo
         stereo = _mono_to_stereo(arr_48k)
 
