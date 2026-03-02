@@ -758,7 +758,7 @@ class SipServer(asyncio.DatagramProtocol):
 
         def _bind() -> int:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.bind(("", 0))
+                sock.bind(("0.0.0.0", 0))  # noqa: S104
                 return sock.getsockname()[1]
 
         return await asyncio.get_running_loop().run_in_executor(None, _bind)
