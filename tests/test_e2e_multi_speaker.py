@@ -81,6 +81,45 @@ class _RtpCollector(asyncio.DatagramProtocol):
         self.packets.append(data)
 
 
+class _BurstyMultiPacedSink(PhoneAudioSink):
+    """Sink that delivers frames in bursts, simulating Discord's real behavior.
+
+    Discord often delivers multiple ticks' worth of frames in a single burst
+    with gaps of up to 200ms between bursts. This sink pre-computes drain
+    results so that burst deliveries alternate with empty drains, keeping
+    the total drain count equal to the non-bursty case.
+    """
+
+    def __init__(
+        self,
+        tick_data: list[list[tuple[int, np.ndarray]]],
+        burst_sizes: list[int],
+    ) -> None:
+        super().__init__()
+        self._drains: list[list[tuple[int, np.ndarray]]] = []
+        tick_idx = 0
+        burst_idx = 0
+        while tick_idx < len(tick_data):
+            n = burst_sizes[burst_idx % len(burst_sizes)]
+            combined: list[tuple[int, np.ndarray]] = []
+            for _ in range(n):
+                if tick_idx < len(tick_data):
+                    combined.extend(tick_data[tick_idx])
+                    tick_idx += 1
+            self._drains.append(combined)
+            for _ in range(n - 1):
+                self._drains.append([])
+            burst_idx += 1
+        self._idx = 0
+
+    def drain(self) -> list[tuple[int, np.ndarray]]:
+        if self._idx < len(self._drains):
+            frames = self._drains[self._idx]
+            self._idx += 1
+            return frames
+        return []
+
+
 class _MultiPacedSink(PhoneAudioSink):
     """Sink that returns pre-computed per-tick frame lists from drain().
 
@@ -165,6 +204,85 @@ async def test_multi_speaker_chord_stagger(file_regression):
     )
     assert stats.rtp_silence_sent == SILENCE_TICKS, (
         f"Expected {SILENCE_TICKS} silence, got {stats.rtp_silence_sent}"
+    )
+
+    # --- Golden file ---
+    received_ulaw = b""
+    for pkt in collector.packets[:TOTAL_TICKS]:
+        received_ulaw += _parse_rtp_payload(pkt)
+
+    pcm_8k = ulaw_to_pcm(received_ulaw)
+    wav_bytes = pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)
+
+    check_fn = partial(wav_samples_check, max_rmse=30.0, min_correlation=0.999)
+    file_regression.check(wav_bytes, binary=True, extension=".wav", check_fn=check_fn)
+
+
+@pytest.mark.asyncio
+async def test_multi_speaker_burst_delivery(file_regression):
+    """Bursty Discord delivery (up to 3 ticks at once) → same golden WAV."""
+    tick_data = _build_tick_data()
+    assert len(tick_data) == TOTAL_TICKS
+
+    burst_sizes = [2, 1, 3, 1]
+    sink = _BurstyMultiPacedSink(tick_data, burst_sizes)
+    stats = BridgeStats()
+    stats._last_summary = time.monotonic()
+
+    loop = asyncio.get_running_loop()
+    collector = _RtpCollector()
+    recv_transport, _ = await loop.create_datagram_endpoint(
+        lambda: collector, local_addr=("127.0.0.1", 0)
+    )
+    recv_port = recv_transport.get_extra_info("sockname")[1]
+    send_transport, _ = await loop.create_datagram_endpoint(
+        asyncio.DatagramProtocol, remote_addr=("127.0.0.1", recv_port)
+    )
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        rtp_send_loop(
+            sink,
+            send_transport,
+            ("127.0.0.1", recv_port),
+            stop_event=stop_event,
+            stats=stats,
+        )
+    )
+
+    for _ in range(2500):
+        await asyncio.sleep(0.01)
+        if len(collector.packets) >= TOTAL_TICKS:
+            break
+
+    stop_event.set()
+    await task
+
+    send_transport.close()
+    recv_transport.close()
+
+    assert len(collector.packets) >= TOTAL_TICKS, (
+        f"Only received {len(collector.packets)}/{TOTAL_TICKS} packets"
+    )
+
+    # --- Stats assertions ---
+    assert stats.d2p_frames_mixed == 200, (
+        f"Expected 200 mixed frames, got {stats.d2p_frames_mixed}"
+    )
+    assert stats.d2p_frames_dropped == 0, (
+        f"Expected 0 dropped, got {stats.d2p_frames_dropped}"
+    )
+    assert stats.d2p_stale_flush == 0, (
+        f"Expected 0 stale flushes, got {stats.d2p_stale_flush}"
+    )
+    assert stats.rtp_frames_sent == TOTAL_TICKS, (
+        f"Expected {TOTAL_TICKS} RTP sent, got {stats.rtp_frames_sent}"
+    )
+    assert stats.rtp_silence_sent == SILENCE_TICKS, (
+        f"Expected {SILENCE_TICKS} silence, got {stats.rtp_silence_sent}"
+    )
+    assert stats.d2p_queue_depth >= 2, (
+        f"Expected queue depth >= 2 (burst buffering), got {stats.d2p_queue_depth}"
     )
 
     # --- Golden file ---
