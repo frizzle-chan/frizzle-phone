@@ -295,3 +295,87 @@ async def test_multi_speaker_burst_delivery(file_regression):
 
     check_fn = partial(wav_samples_check, max_rmse=30.0, min_correlation=0.999)
     file_regression.check(wav_bytes, binary=True, extension=".wav", check_fn=check_fn)
+
+
+async def _run_burst_test(
+    burst_sizes: list[int],
+) -> BridgeStats:
+    """Run the send loop with bursty delivery and return stats."""
+    tick_data = _build_tick_data()
+    sink = _BurstyMultiPacedSink(tick_data, burst_sizes)
+    stats = BridgeStats()
+    stats._last_summary = time.monotonic()
+
+    loop = asyncio.get_running_loop()
+    collector = _RtpCollector()
+    recv_transport, _ = await loop.create_datagram_endpoint(
+        lambda: collector, local_addr=("127.0.0.1", 0)
+    )
+    recv_port = recv_transport.get_extra_info("sockname")[1]
+    send_transport, _ = await loop.create_datagram_endpoint(
+        asyncio.DatagramProtocol, remote_addr=("127.0.0.1", recv_port)
+    )
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        rtp_send_loop(
+            sink,
+            send_transport,
+            ("127.0.0.1", recv_port),
+            stop_event=stop_event,
+            stats=stats,
+        )
+    )
+
+    for _ in range(2500):
+        await asyncio.sleep(0.01)
+        if len(collector.packets) >= TOTAL_TICKS:
+            break
+
+    stop_event.set()
+    await task
+
+    send_transport.close()
+    recv_transport.close()
+
+    assert len(collector.packets) >= TOTAL_TICKS, (
+        f"Only received {len(collector.packets)}/{TOTAL_TICKS} packets"
+    )
+    return stats
+
+
+@pytest.mark.asyncio
+async def test_burst_delivery_stress_no_drops():
+    """Bursts up to 50 frames (1s) are fully absorbed with zero drops.
+
+    With the old MAX_SLOT_QUEUE=5 these bursts would overflow massively.
+    """
+    stats = await _run_burst_test(burst_sizes=[50, 1, 25, 1, 40, 1])
+
+    assert stats.d2p_frames_dropped == 0, (
+        f"Expected 0 dropped frames, got {stats.d2p_frames_dropped} "
+        f"(queue depth hit {stats.d2p_queue_depth})"
+    )
+    assert stats.d2p_queue_depth >= 20, (
+        f"Expected queue depth >= 20 (large burst), got {stats.d2p_queue_depth}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_burst_delivery_stress_bounded_drops():
+    """Bursts of 100 frames (2s) overflow the queue but drops are bounded.
+
+    The pattern cycles twice over 205 ticks, producing two 100-frame bursts.
+    Each burst overflows the 50-slot queue, dropping ~50 oldest frames per
+    burst (~95 total).  With MAX_SLOT_QUEUE=5, the same pattern would drop
+    ~190 frames — this verifies the larger queue cuts drops roughly in half.
+    """
+    stats = await _run_burst_test(burst_sizes=[100, 1, 1, 1])
+
+    assert stats.d2p_frames_dropped > 0, "Expected some drops from 100-frame bursts"
+    assert stats.d2p_frames_dropped <= 100, (
+        f"Drops should be bounded (~95), got {stats.d2p_frames_dropped}"
+    )
+    assert stats.d2p_queue_depth == 50, (
+        f"Queue should have hit cap of 50, got {stats.d2p_queue_depth}"
+    )
