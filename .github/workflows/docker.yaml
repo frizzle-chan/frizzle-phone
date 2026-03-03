@@ -88,6 +88,9 @@ jobs:
   smoke-test:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     env:
       SIP_PORT: "15060"
       WEB_PORT: "18080"
