@@ -10,7 +10,7 @@ import asyncpg
 from dotenv import load_dotenv
 
 from frizzle_phone.bot import create_bot, set_hangup_handler
-from frizzle_phone.database import run_migrations
+from frizzle_phone.database import cleanup_stale_calls, run_migrations
 from frizzle_phone.discord_patches import apply_discord_patches
 from frizzle_phone.rtp.pcmu import pcm_to_ulaw
 from frizzle_phone.rtp.stream import SAMPLES_PER_PACKET
@@ -43,6 +43,7 @@ async def main() -> None:
     if pool is None:
         raise RuntimeError("Failed to create database connection pool")
     await run_migrations(pool)
+    await cleanup_stale_calls(pool)
 
     # Create Discord bot
     bot = create_bot()
