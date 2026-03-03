@@ -1,10 +1,11 @@
 """Golden-file test for Discord→Phone audio pipeline."""
 
-import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from frizzle_phone.bridge import PhoneAudioSink
-from frizzle_phone.rtp.pcmu import ulaw_to_pcm
+import numpy as np
+
+from frizzle_phone.bridge import PhoneAudioSink, _new_resampler
+from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw, ulaw_to_pcm
 from tests.audio_helpers import (
     FIXTURES,
     pcm_to_wav,
@@ -19,11 +20,11 @@ def _run_sink(
     """Feed speaker frames through PhoneAudioSink, return output WAV bytes.
 
     speaker_frames maps user_id → list of 20ms stereo frame bytes.
-    Speakers are interleaved within each 20ms batch window.
+    Speakers are interleaved within each 20ms batch, then drained and
+    mixed (replicating rtp_send_loop's per-tick logic).
     """
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=500)
-    sink = PhoneAudioSink(q, loop)
+    sink = PhoneAudioSink()
+    resampler = _new_resampler()
 
     users = {}
     for uid in speaker_frames:
@@ -32,23 +33,44 @@ def _run_sink(
         users[uid] = u
 
     max_frames = max(len(f) for f in speaker_frames.values())
-    t = 1000.0
-
-    with patch("frizzle_phone.bridge.time") as mock_time:
-        for i in range(max_frames):
-            mock_time.monotonic.return_value = t + i * 0.020
-            for uid, frames in speaker_frames.items():
-                if i < len(frames):
-                    data = MagicMock()
-                    data.pcm = frames[i]
-                    sink.write(users[uid], data)
-        sink.cleanup()
-
     ulaw_payloads = []
-    for call in loop.call_soon_threadsafe.call_args_list:
-        ulaw_payloads.append(call[0][1])
-    ulaw_bytes = b"".join(ulaw_payloads)
 
+    for i in range(max_frames):
+        for uid, frames in speaker_frames.items():
+            if i < len(frames):
+                data = MagicMock()
+                data.pcm = frames[i]
+                sink.write(users[uid], data)
+
+        raw_frames = sink.drain()
+        if not raw_frames:
+            continue
+
+        # Slot grouping (same algorithm as rtp_send_loop)
+        slots: list[dict[int, np.ndarray]] = []
+        current_slot: dict[int, np.ndarray] = {}
+        for user_key, mono in raw_frames:
+            if user_key in current_slot:
+                slots.append(current_slot)
+                current_slot = {}
+            current_slot[user_key] = mono
+        if current_slot:
+            slots.append(current_slot)
+
+        slot = slots[-1]
+        if len(slot) == 1:
+            mixed = next(iter(slot.values()))
+        else:
+            mixed = np.clip(
+                np.sum(list(slot.values()), axis=0, dtype=np.int32),
+                -32768,
+                32767,
+            ).astype(np.int16)
+
+        arr_8k = resampler.resample_chunk(mixed)
+        ulaw_payloads.append(pcm16_arr_to_ulaw(arr_8k))
+
+    ulaw_bytes = b"".join(ulaw_payloads)
     pcm_8k = ulaw_to_pcm(ulaw_bytes)
     return pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)
 

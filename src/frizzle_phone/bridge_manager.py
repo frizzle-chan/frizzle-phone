@@ -15,7 +15,6 @@ from frizzle_phone.rtp.receive import RtpReceiveProtocol
 logger = logging.getLogger(__name__)
 
 P2D_QUEUE_SIZE = 15  # Phone-to-Discord: ~300ms at 20ms/frame
-D2P_QUEUE_SIZE = 50  # Discord-to-Phone: ~1s at 20ms/frame
 
 
 class BridgeHandle:
@@ -63,7 +62,6 @@ class BridgeManager:
         loop = asyncio.get_running_loop()
 
         phone_q: queue.Queue[bytes] = queue.Queue(maxsize=P2D_QUEUE_SIZE)
-        discord_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=D2P_QUEUE_SIZE)
         stats = BridgeStats()
 
         # Bind RTP receive on the port advertised in SDP
@@ -77,14 +75,14 @@ class BridgeManager:
         voice_client.play(source)
 
         # Discord -> Phone
-        sink = PhoneAudioSink(discord_q, loop, stats=stats)
+        sink = PhoneAudioSink(stats=stats)
         voice_client.listen(sink)
 
         # RTP send loop
         stop_event = asyncio.Event()
         send_task = loop.create_task(
             rtp_send_loop(
-                discord_q,
+                sink,
                 rtp_transport,
                 remote_rtp_addr,
                 stop_event=stop_event,

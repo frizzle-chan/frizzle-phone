@@ -29,9 +29,8 @@ class BridgeStats:
         # Discord → Phone
         self.d2p_frames_in: int = 0
         self.d2p_frames_mixed: int = 0
-        self.d2p_queue_overflow: int = 0
+        self.d2p_frames_dropped: int = 0
         self.d2p_stale_flush: int = 0
-        self.d2p_queue_depth_max: int = 0
         self.d2p_max_write_gap: float = 0.0
         self._d2p_last_write: float = 0.0
         self._d2p_gap_warnings: int = 0
@@ -61,10 +60,9 @@ class BridgeStats:
         snap = {
             "d2p_in": self.d2p_frames_in,
             "d2p_mixed": self.d2p_frames_mixed,
-            "d2p_overflow": self.d2p_queue_overflow,
+            "d2p_dropped": self.d2p_frames_dropped,
             "d2p_stale": self.d2p_stale_flush,
             "d2p_max_gap": self.d2p_max_write_gap,
-            "d2p_qmax": self.d2p_queue_depth_max,
             "d2p_gap_warns": self._d2p_gap_warnings,
             "p2d_in": self.p2d_frames_in,
             "p2d_overflow": self.p2d_queue_overflow,
@@ -80,16 +78,15 @@ class BridgeStats:
         self.reset()
 
         logger.info(
-            "bridge stats | d2p in=%d mixed=%d overflow=%d stale=%d "
-            "max_gap=%.1fms qmax=%d | p2d in=%d overflow=%d reads=%d "
+            "bridge stats | d2p in=%d mixed=%d dropped=%d stale=%d "
+            "max_gap=%.1fms | p2d in=%d overflow=%d reads=%d "
             "silence=%d max_gap=%.1fms | rtp sent=%d silence=%d "
             "overshoot=%.1fms",
             snap["d2p_in"],
             snap["d2p_mixed"],
-            snap["d2p_overflow"],
+            snap["d2p_dropped"],
             snap["d2p_stale"],
             snap["d2p_max_gap"] * 1000,
-            snap["d2p_qmax"],
             snap["p2d_in"],
             snap["p2d_overflow"],
             snap["p2d_reads"],
@@ -100,9 +97,9 @@ class BridgeStats:
             snap["rtp_overshoot"] * 1000,
         )
 
-        if snap["d2p_overflow"] > 0:
+        if snap["d2p_dropped"] > 0:
             logger.warning(
-                "bridge d2p queue overflow: %d frames dropped", snap["d2p_overflow"]
+                "bridge d2p freshness drops: %d slots discarded", snap["d2p_dropped"]
             )
 
         if snap["p2d_reads"] > 0 and snap["p2d_silence"] / snap["p2d_reads"] > 0.20:
