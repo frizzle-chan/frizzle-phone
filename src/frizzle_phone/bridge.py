@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
-MAX_SLOT_QUEUE = 5  # 100ms max buffer, bounds latency
+MAX_SLOT_QUEUE = 50  # 1s max buffer, bounds latency
 
 
 def stereo_to_mono(data: bytes) -> np.ndarray:
