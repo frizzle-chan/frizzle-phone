@@ -66,6 +66,11 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 - GitHub Actions pins dependencies by SHA with version comments
 - SIP code (`src/frizzle_phone/sip/`) is annotated with RFC section references — when modifying SIP logic, cite the relevant RFC section (e.g. `# RFC 3261 §17.2.1: ...`). Use the `/rfc-sip-lookup` skill to find the correct sections.
 
+## Database
+
+- SQLite DB path: configurable via `DATABASE_PATH` env var (default: `frizzle-phone.db` in working dir)
+- Migration runner (`database.py`): uses explicit `BEGIN`/`COMMIT` transactions — do NOT use `executescript()` (it issues an implicit COMMIT, breaking atomicity)
+
 ## Audio Bridge Diagnostics
 
 `BridgeStats` emits periodic `"bridge stats"` lines to `frizzle-phone.log` every ~5s during active calls. Grep for `bridge stats` or `bridge d2p` / `bridge p2d` to find them.
