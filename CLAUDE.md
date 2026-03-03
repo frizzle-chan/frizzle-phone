@@ -49,6 +49,7 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 4. `uv run vulture` - dead code detection
 5. `uv run pytest` - tests with coverage
 6. Docker smoke test - builds production image, starts container, runs web + SIP checks
+7. CodeQL security scanning — `github-advanced-security[bot]` review comments block merge and must be resolved
 
 ### Logs
 
@@ -64,6 +65,11 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 - Repo does not allow merge commits (use squash merge)
 - GitHub Actions pins dependencies by SHA with version comments
 - SIP code (`src/frizzle_phone/sip/`) is annotated with RFC section references — when modifying SIP logic, cite the relevant RFC section (e.g. `# RFC 3261 §17.2.1: ...`). Use the `/rfc-sip-lookup` skill to find the correct sections.
+
+## Database
+
+- SQLite DB path: configurable via `DATABASE_PATH` env var (default: `frizzle-phone.db` in working dir)
+- Migration runner (`database.py`): uses explicit `BEGIN`/`COMMIT` transactions — do NOT use `executescript()` (it issues an implicit COMMIT, breaking atomicity)
 
 ## Audio Bridge Diagnostics
 
