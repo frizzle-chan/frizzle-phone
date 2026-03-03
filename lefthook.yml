@@ -28,10 +28,6 @@ pre-commit:
       glob: "*.py"
       run: uv run vulture
 
-    - name: squawk check
-      glob: "migrations/*.sql"
-      run: uv run squawk {staged_files}
-
     - name: pytest
       exclude:
         - "*.md"
@@ -45,10 +41,4 @@ pre-commit:
         - ".devcontainer/**"
         - ".vscode/**"
         - "lefthook.yml"
-        - ".squawk.toml"
-      run: |
-        if [ -f /.dockerenv ]; then
-          uv run pytest
-        else
-          devcontainer exec --workspace-folder . uv run pytest
-        fi
+      run: uv run pytest

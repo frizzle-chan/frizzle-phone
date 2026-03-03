@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
+import aiosqlite
 import pytest
 
 from frizzle_phone.bridge_manager import BridgeHandle
@@ -50,10 +50,10 @@ def _make_invite(*, require: str | None = None, branch: str = "z9hG4bK001") -> b
     return _make_request("INVITE", branch=branch, require=require)
 
 
-def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
+def _make_server(db: aiosqlite.Connection) -> tuple[SipServer, FakeTransport]:
     server = SipServer(
         server_ip="10.0.0.2",
-        pool=pool,
+        db=db,
         audio_buffers={"techno": b"\xff" * 160},
         bot=MagicMock(),
     )
@@ -65,9 +65,9 @@ def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
 ADDR = ("10.0.0.1", 5060)
 
 
-def test_require_header_returns_420(pool):
+def test_require_header_returns_420(db):
     """Require header with unsupported option triggers 420 Bad Extension."""
-    server, transport = _make_server(pool)
+    server, transport = _make_server(db)
     server.datagram_received(_make_invite(require="100rel"), ADDR)
     # Should get a single 420 response (no 100 Trying, no 200 OK)
     assert len(transport.sent) == 1
@@ -78,9 +78,9 @@ def test_require_header_returns_420(pool):
 
 
 @pytest.mark.asyncio
-async def test_no_require_header_proceeds_normally(seeded_pool):
+async def test_no_require_header_proceeds_normally(seeded_db):
     """Without Require header, INVITE is processed normally."""
-    server, transport = _make_server(seeded_pool)
+    server, transport = _make_server(seeded_db)
     server.datagram_received(_make_invite(), ADDR)
     await _drain()
     # Should get 100 Trying + 200 OK
@@ -94,9 +94,9 @@ async def test_no_require_header_proceeds_normally(seeded_pool):
 
 
 @pytest.mark.asyncio
-async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_pool):
+async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_db):
     """CANCEL while INVITE txn is in PROCEEDING sends 200 + 487 and terminates."""
-    server, transport = _make_server(seeded_pool)
+    server, transport = _make_server(seeded_db)
     call_id = "cancel-proceeding@test"
 
     # Send INVITE — creates call and txn (100 Trying + 200 OK)
@@ -133,9 +133,9 @@ async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_pool):
 
 
 @pytest.mark.asyncio
-async def test_unknown_extension_returns_404(pool):
+async def test_unknown_extension_returns_404(db):
     """INVITE for an unregistered extension returns 404 Not Found."""
-    server, transport = _make_server(pool)
+    server, transport = _make_server(db)
     server.datagram_received(_make_request("INVITE", uri="sip:999@10.0.0.2"), ADDR)
     await _drain()
     assert len(transport.sent) == 1
@@ -145,9 +145,9 @@ async def test_unknown_extension_returns_404(pool):
 
 
 @pytest.mark.asyncio
-async def test_voice_disconnect_sends_bye(pool):
+async def test_voice_disconnect_sends_bye(db):
     """Voice client disconnection triggers BYE to phone."""
-    server, transport = _make_server(pool)
+    server, transport = _make_server(db)
 
     # Build a Call with an active discord bridge
     vc = MagicMock()

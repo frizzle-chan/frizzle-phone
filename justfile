@@ -1,7 +1,7 @@
 # Run commands inside devcontainer automatically when on host
 _run := if path_exists("/.dockerenv") == "true" { "" } else { "devcontainer exec --workspace-folder ." }
 
-default: lint format types squawk vulture test
+default: lint format types vulture test
 
 test:
     {{_run}} uv run pytest
@@ -22,9 +22,6 @@ format:
 types:
     {{_run}} uv run ty check
 
-squawk:
-    {{_run}} uv run squawk migrations/*.sql
-
 vulture:
     {{_run}} uv run vulture
 
@@ -39,9 +36,6 @@ down:
 devcontainer:
     gh auth login --with-token < .github-token.txt
 
-# Reset dev database (drops and recreates schema, runs migrations)
+# Delete the local SQLite database
 resetdb:
-    {{_run}} psql postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-
-migratedb:
-    echo TODO
+    rm -f frizzle-phone.db

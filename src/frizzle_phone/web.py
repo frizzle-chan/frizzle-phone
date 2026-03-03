@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp_jinja2
-import asyncpg
+import aiosqlite
 import jinja2
 from aiohttp import web
 from discord.ext import commands
 
-_pool_key = web.AppKey("pool", asyncpg.Pool)
+_db_key = web.AppKey("db", aiosqlite.Connection)
 _bot_key = web.AppKey("bot", commands.Bot)
 _audio_names_key = web.AppKey("audio_names", list)
 
@@ -18,14 +18,16 @@ _audio_names_key = web.AppKey("audio_names", list)
 async def _get_handler(
     request: web.Request,
 ) -> web.Response:
-    pool = request.app[_pool_key]
+    db = request.app[_db_key]
     bot = request.app[_bot_key]
     audio_names = request.app[_audio_names_key]
 
-    discord_rows = await pool.fetch(
+    cursor = await db.execute(
         "SELECT extension, guild_id, channel_id FROM discord_extensions"
     )
-    audio_rows = await pool.fetch("SELECT extension, audio_name FROM audio_extensions")
+    discord_rows = await cursor.fetchall()
+    cursor = await db.execute("SELECT extension, audio_name FROM audio_extensions")
+    audio_rows = await cursor.fetchall()
 
     discord_map: dict[str, dict[str, Any]] = {}
     for row in discord_rows:
@@ -48,7 +50,7 @@ async def _get_handler(
 async def _post_handler(
     request: web.Request,
 ) -> web.Response:
-    pool = request.app[_pool_key]
+    db = request.app[_db_key]
     data = await request.post()
 
     discord_entries: list[tuple[str, int, int]] = []
@@ -73,29 +75,30 @@ async def _post_handler(
     if len(all_extensions) != len(set(all_extensions)):
         return web.Response(status=400, text="Duplicate extension across tables")
 
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("DELETE FROM discord_extensions")
-        await conn.execute("DELETE FROM audio_extensions")
+    try:
+        await db.execute("DELETE FROM discord_extensions")
+        await db.execute("DELETE FROM audio_extensions")
         for ext, guild_id, channel_id in discord_entries:
-            await conn.execute(
+            await db.execute(
                 "INSERT INTO discord_extensions (extension, guild_id, channel_id)"
-                " VALUES ($1, $2, $3)",
-                ext,
-                guild_id,
-                channel_id,
+                " VALUES (?, ?, ?)",
+                (ext, guild_id, channel_id),
             )
         for ext, audio_name in audio_entries:
-            await conn.execute(
-                "INSERT INTO audio_extensions (extension, audio_name) VALUES ($1, $2)",
-                ext,
-                audio_name,
+            await db.execute(
+                "INSERT INTO audio_extensions (extension, audio_name) VALUES (?, ?)",
+                (ext, audio_name),
             )
+        await db.commit()
+    except:
+        await db.rollback()
+        raise
 
     raise web.HTTPSeeOther(location="/")
 
 
 def create_app(
-    pool: asyncpg.Pool,
+    db: aiosqlite.Connection,
     bot: commands.Bot,
     audio_names: list[str],
 ) -> web.Application:
@@ -105,7 +108,7 @@ def create_app(
         loader=jinja2.PackageLoader("frizzle_phone"),
         autoescape=jinja2.select_autoescape(),
     )
-    app[_pool_key] = pool
+    app[_db_key] = db
     app[_bot_key] = bot
     app[_audio_names_key] = audio_names
     app.router.add_get("/", _get_handler)
