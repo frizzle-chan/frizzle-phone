@@ -49,6 +49,7 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 4. `uv run vulture` - dead code detection
 5. `uv run pytest` - tests with coverage
 6. Docker smoke test - builds production image, starts container, runs web + SIP checks
+7. CodeQL security scanning — `github-advanced-security[bot]` review comments block merge and must be resolved
 
 ### Logs
 
