@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import queue
 from unittest.mock import MagicMock, patch
@@ -50,14 +49,14 @@ def test_log_summary_resets_counters():
     assert stats.rtp_frames_sent == 0
 
 
-def test_log_summary_warns_on_d2p_overflow(caplog):
+def test_log_summary_warns_on_d2p_freshness_drops(caplog):
     stats = BridgeStats()
-    stats.d2p_queue_overflow = 3
+    stats.d2p_frames_dropped = 3
     stats.rtp_frames_sent = 100
     with caplog.at_level(logging.WARNING, logger="frizzle_phone.bridge_stats"):
         stats.log_and_reset()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("d2p queue overflow" in r.message for r in warnings)
+    assert any("d2p freshness drops" in r.message for r in warnings)
 
 
 def test_log_summary_warns_on_high_silence_reads(caplog):
@@ -164,9 +163,7 @@ def test_reset_clears_gap_warnings():
 
 def test_sink_write_increments_d2p_frames_in():
     stats = BridgeStats()
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-    sink = PhoneAudioSink(q, loop, stats=stats)
+    sink = PhoneAudioSink(stats=stats)
 
     user = MagicMock()
     user.id = 1
@@ -175,50 +172,6 @@ def test_sink_write_increments_d2p_frames_in():
 
     sink.write(user, data)
     assert stats.d2p_frames_in == 1
-
-
-def test_sink_flush_increments_d2p_frames_mixed():
-    stats = BridgeStats()
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-    sink = PhoneAudioSink(q, loop, stats=stats)
-
-    user = MagicMock()
-    user.id = 1
-    data = MagicMock()
-    data.pcm = b"\x00" * 3840
-
-    t = 1000.0
-    with patch("frizzle_phone.bridge.time") as mock_time:
-        mock_time.monotonic.return_value = t
-        sink.write(user, data)
-        # Advance past batch threshold to trigger flush
-        mock_time.monotonic.return_value = t + 0.020
-        sink.write(user, data)
-
-    assert stats.d2p_frames_mixed == 1
-
-
-def test_sink_stale_batch_increments_d2p_stale_flush():
-    stats = BridgeStats()
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-    sink = PhoneAudioSink(q, loop, stats=stats)
-
-    user = MagicMock()
-    user.id = 1
-    data = MagicMock()
-    data.pcm = b"\x00" * 3840
-
-    t = 1000.0
-    with patch("frizzle_phone.bridge.time") as mock_time:
-        mock_time.monotonic.return_value = t
-        sink.write(user, data)
-        # Advance past stale threshold (>60ms)
-        mock_time.monotonic.return_value = t + 0.070
-        sink.write(user, data)
-
-    assert stats.d2p_stale_flush == 1
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-import asyncio
 import queue
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +9,7 @@ from frizzle_phone.bridge import (
     PhoneAudioSource,
     stereo_to_mono,
 )
+from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.discord_patches import _patched_callback
 
 _SSRC = 12345
@@ -70,82 +70,121 @@ def test_phone_audio_source_is_not_opus():
 
 
 def test_phone_audio_sink_wants_opus_returns_false():
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-    sink = PhoneAudioSink(q, loop)
+    sink = PhoneAudioSink()
     assert sink.wants_opus() is False
 
 
-def test_phone_audio_sink_uses_threadsafe_enqueue():
-    """write() batches; a second write >2ms later flushes."""
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-    sink = PhoneAudioSink(q, loop)
-
-    user_a = MagicMock()
-    user_a.id = 1
-    data = MagicMock()
-    data.pcm = b"\x00" * 3840  # 20ms 48kHz stereo silence
-
-    t = 1000.0
-    with patch("frizzle_phone.bridge.time") as mock_time:
-        mock_time.monotonic.return_value = t
-        sink.write(user_a, data)
-        # First write accumulates — no flush yet
-        loop.call_soon_threadsafe.assert_not_called()
-
-        user_b = MagicMock()
-        user_b.id = 2
-        mock_time.monotonic.return_value = t + 0.020
-        sink.write(user_b, data)
-        # Second write flushes the previous batch
-        loop.call_soon_threadsafe.assert_called_once()
-
-
-def test_phone_audio_sink_mixes_multiple_speakers():
-    """Two speakers' PCM should be summed in the flushed output."""
-    loop = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-    sink = PhoneAudioSink(q, loop)
-
-    # 960 stereo samples = 3840 bytes (20ms @ 48kHz)
-    val_a = 1000
-    val_b = 2000
-    stereo_a = np.array([val_a, val_a] * 960, dtype=np.int16).tobytes()
-    stereo_b = np.array([val_b, val_b] * 960, dtype=np.int16).tobytes()
+def test_phone_audio_sink_drain_returns_accumulated_frames():
+    """write() accumulates frames; drain() returns and clears them."""
+    sink = PhoneAudioSink()
 
     user_a = MagicMock()
     user_a.id = 1
     user_b = MagicMock()
     user_b.id = 2
-    data_a = MagicMock()
-    data_a.pcm = stereo_a
-    data_b = MagicMock()
-    data_b.pcm = stereo_b
+    data = MagicMock()
+    data.pcm = b"\x00" * 3840  # 20ms 48kHz stereo silence
 
-    t = 1000.0
-    with patch("frizzle_phone.bridge.time") as mock_time:
-        # Both writes in the same batch
-        mock_time.monotonic.return_value = t
-        sink.write(user_a, data_a)
-        sink.write(user_b, data_b)
+    sink.write(user_a, data)
+    sink.write(user_b, data)
 
-        # Both speakers accumulated; mixing verified after flush below
+    frames = sink.drain()
+    assert len(frames) == 2
+    assert frames[0][0] == 1  # user_key
+    assert frames[1][0] == 2
 
-        # Trigger flush via next-batch write
-        mock_time.monotonic.return_value = t + 0.020
-        dummy_user = MagicMock()
-        dummy_user.id = 99
-        dummy_data = MagicMock()
-        dummy_data.pcm = b"\x00" * 3840
-        sink.write(dummy_user, dummy_data)
+    # Buffer is now empty
+    assert sink.drain() == []
 
-    # The flush should have produced a call_soon_threadsafe call
-    loop.call_soon_threadsafe.assert_called_once()
-    enqueued_ulaw = loop.call_soon_threadsafe.call_args[0][1]
-    # 960 mono samples @ 48kHz → 160 samples @ 8kHz = 160 bytes ulaw
-    assert len(enqueued_ulaw) == 160
-    assert enqueued_ulaw != b"\xff" * 160  # not silence
+
+def test_phone_audio_sink_drain_five_speakers_one_slot():
+    """5 speakers in one epoch → slot grouping yields 1 slot."""
+    from frizzle_phone.bridge import _new_resampler
+    from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw
+
+    sink = PhoneAudioSink()
+
+    for uid in range(1, 6):
+        user = MagicMock()
+        user.id = uid
+        data = MagicMock()
+        val = uid * 1000
+        data.pcm = np.array([val, val] * 960, dtype=np.int16).tobytes()
+        sink.write(user, data)
+
+    frames = sink.drain()
+    assert len(frames) == 5
+
+    # Slot grouping (same algorithm as rtp_send_loop)
+    slots: list[dict[int, np.ndarray]] = []
+    current_slot: dict[int, np.ndarray] = {}
+    for user_key, mono in frames:
+        if user_key in current_slot:
+            slots.append(current_slot)
+            current_slot = {}
+        current_slot[user_key] = mono
+    if current_slot:
+        slots.append(current_slot)
+
+    assert len(slots) == 1  # all 5 speakers in one slot
+    assert len(slots[0]) == 5
+
+    # Mix produces valid ulaw
+    slot = slots[0]
+    mixed = np.clip(
+        np.sum(list(slot.values()), axis=0, dtype=np.int32), -32768, 32767
+    ).astype(np.int16)
+    resampler = _new_resampler()
+    arr_8k = resampler.resample_chunk(mixed)
+    ulaw = pcm16_arr_to_ulaw(arr_8k)
+    assert len(ulaw) == 160
+    assert ulaw != b"\xff" * 160  # not silence
+
+
+def test_phone_audio_sink_burst_keeps_last_slot():
+    """Burst delivery (multiple epochs) → slot grouping keeps only last slot."""
+    sink = PhoneAudioSink(stats=BridgeStats())
+
+    # Simulate 3 epochs of user 1 speaking: user_key repeats → multiple slots
+    user = MagicMock()
+    user.id = 1
+    for _ in range(3):
+        data = MagicMock()
+        data.pcm = np.array([500, 500] * 960, dtype=np.int16).tobytes()
+        sink.write(user, data)
+
+    frames = sink.drain()
+    assert len(frames) == 3
+
+    # Slot grouping
+    slots: list[dict[int, np.ndarray]] = []
+    current_slot: dict[int, np.ndarray] = {}
+    for user_key, mono in frames:
+        if user_key in current_slot:
+            slots.append(current_slot)
+            current_slot = {}
+        current_slot[user_key] = mono
+    if current_slot:
+        slots.append(current_slot)
+
+    assert len(slots) == 3  # 3 separate slots (key repeats)
+
+    # rtp_send_loop keeps only the last for freshness
+    kept = slots[-1]
+    assert len(kept) == 1
+    assert 1 in kept
+
+
+def test_phone_audio_sink_cleanup_drains():
+    """cleanup() discards remaining frames."""
+    sink = PhoneAudioSink()
+    user = MagicMock()
+    user.id = 1
+    data = MagicMock()
+    data.pcm = b"\x00" * 3840
+    sink.write(user, data)
+    sink.cleanup()
+    assert sink.drain() == []
 
 
 # ---------------------------------------------------------------------------

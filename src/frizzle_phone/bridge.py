@@ -3,13 +3,14 @@
 # Naming convention — d2p / p2d:
 #   d2p = Discord-to-Phone (audio from Discord voice → SIP/RTP to phone)
 #   p2d = Phone-to-Discord (audio from SIP/RTP phone → Discord voice)
-# Queue parameters use long form (discord_to_phone_queue), constants use
-# short form (D2P_QUEUE_SIZE), and stats fields use short form (d2p_frames_in).
+# Queue parameters use long form (phone_to_discord_queue), constants use
+# short form (P2D_QUEUE_SIZE), and stats fields use short form (d2p_frames_in).
 
 import asyncio
 import logging
 import queue
 import random
+import threading
 import time
 
 import discord
@@ -68,76 +69,97 @@ class PhoneAudioSource(discord.AudioSource):
         self._stopped = True
 
 
-_MIX_BATCH_THRESHOLD_S = 0.002  # 2ms — micro-batch for multi-speaker mixing
-_MIX_STALE_THRESHOLD_S = 0.060  # 60ms — discard stale frames after silence gap
-
-
 class PhoneAudioSink(voice_recv.AudioSink):
-    """Receives Discord voice and enqueues ulaw for phone RTP send.
+    """Receives Discord voice and accumulates raw mono frames for mixing.
 
-    Multiple speakers are mixed at 48kHz before resampling to 8kHz.
-    Frames are accumulated in a list within a micro-batch window and
-    flushed using slot-based grouping to handle burst delivery.
+    The rtp_send_loop drains accumulated frames each 20ms tick and performs
+    slot-based mixing, resampling, and RTP encoding — keeping mixing on a
+    strict cadence instead of the bursty write() thread.
     """
 
-    def __init__(
-        self,
-        discord_to_phone_queue: asyncio.Queue[bytes],
-        loop: asyncio.AbstractEventLoop,
-        *,
-        stats: BridgeStats | None = None,
-    ) -> None:
+    def __init__(self, *, stats: BridgeStats | None = None) -> None:
         super().__init__()
-        self._queue = discord_to_phone_queue
-        self._loop = loop
-        self._pending_frames: list[tuple[int, np.ndarray]] = []
-        self._mix_start_time: float = 0.0
+        self._lock = threading.Lock()
+        self._buf: list[tuple[int, np.ndarray]] = []
         self._stats = stats
-        self._resampler = self._new_resampler()
-
-    @staticmethod
-    def _new_resampler() -> soxr.ResampleStream:
-        return soxr.ResampleStream(48000, 8000, 1, dtype="int16", quality=soxr.QQ)
 
     def wants_opus(self) -> bool:
         return False
 
-    def _enqueue(self, payload: bytes) -> None:
-        # Drop newest on overflow — simple backpressure; the next 20ms frame
-        # will retry.  (Contrast with p2d in receive.py which drops oldest
-        # to preserve freshness for real-time playback.)
-        try:
-            self._queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            if self._stats:
-                self._stats.d2p_queue_overflow += 1
-                logger.warning(
-                    "bridge d2p queue full, dropping frame (depth=%d)",
-                    self._queue.qsize(),
-                )
+    def drain(self) -> list[tuple[int, np.ndarray]]:
+        """Swap out accumulated frames (thread-safe). Returns the old buffer."""
+        with self._lock:
+            frames = self._buf
+            self._buf = []
+        return frames
 
-    def _flush_mix(self) -> None:
-        """Group accumulated frames into time slots, mix, resample, and enqueue."""
-        if not self._pending_frames:
-            return
+    def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
+        if self._stats:
+            self._stats.record_d2p_write()
+        user_key = user.id if user is not None else 0
+        mono = stereo_to_mono(data.pcm)
+        with self._lock:
+            self._buf.append((user_key, mono))
 
-        # Group into time slots — new slot starts when a user_key repeats.
-        # Each 20ms Discord frame produces one entry per speaker, so a repeated
-        # user_key means we've crossed into the next time slot and must mix
-        # the previous slot separately to avoid double-counting a speaker.
-        slots: list[dict[int, np.ndarray]] = []
-        current_slot: dict[int, np.ndarray] = {}
-        for user_key, mono in self._pending_frames:
-            if user_key in current_slot:
+    def cleanup(self) -> None:
+        self.drain()  # discard remaining frames
+
+
+def _new_resampler() -> soxr.ResampleStream:
+    return soxr.ResampleStream(48000, 8000, 1, dtype="int16", quality=soxr.QQ)
+
+
+async def rtp_send_loop(
+    sink: PhoneAudioSink,
+    transport: asyncio.DatagramTransport,
+    remote_addr: tuple[str, int],
+    *,
+    stop_event: asyncio.Event,
+    stats: BridgeStats | None = None,
+) -> None:
+    """Drain sink, mix, resample, and send RTP packets at 20ms intervals."""
+    ssrc = random.randint(0, 0xFFFFFFFF)
+    seq = random.randint(0, 0xFFFF)
+    timestamp = random.randint(0, 0xFFFFFFFF)
+    next_send = time.monotonic()
+    first = True
+    loop = asyncio.get_running_loop()
+    resampler = _new_resampler()
+    was_silent = True
+
+    while not stop_event.is_set():
+        frames = sink.drain()
+
+        if not frames:
+            payload = ULAW_SILENCE_PAYLOAD
+            is_silence = True
+            if not was_silent:
+                # Reset resampler after silence gap to avoid state bleed
+                resampler = _new_resampler()
+            was_silent = True
+        else:
+            is_silence = False
+            was_silent = False
+
+            # Group into time slots — new slot starts when a user_key repeats.
+            slots: list[dict[int, np.ndarray]] = []
+            current_slot: dict[int, np.ndarray] = {}
+            for user_key, mono in frames:
+                if user_key in current_slot:
+                    slots.append(current_slot)
+                    current_slot = {}
+                current_slot[user_key] = mono
+            if current_slot:
                 slots.append(current_slot)
-                current_slot = {}
-            current_slot[user_key] = mono
-        if current_slot:
-            slots.append(current_slot)
 
-        for slot in slots:
-            if self._stats:
-                self._stats.d2p_frames_mixed += 1
+            # Keep only the last slot for freshness / low latency
+            if len(slots) > 1 and stats:
+                stats.d2p_frames_dropped += len(slots) - 1
+                stats.d2p_stale_flush += 1
+            slot = slots[-1]
+
+            if stats:
+                stats.d2p_frames_mixed += 1
             if len(slot) == 1:
                 mixed = next(iter(slot.values()))
             else:
@@ -146,62 +168,9 @@ class PhoneAudioSink(voice_recv.AudioSink):
                     -32768,
                     32767,
                 ).astype(np.int16)
-            arr_8k = self._resampler.resample_chunk(mixed)
-            ulaw_payload = pcm16_arr_to_ulaw(arr_8k)
-            self._loop.call_soon_threadsafe(self._enqueue, ulaw_payload)
 
-    def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
-        now = time.monotonic()
-        if self._stats:
-            self._stats.record_d2p_write()
-
-        if self._pending_frames:
-            age = now - self._mix_start_time
-            if age > _MIX_STALE_THRESHOLD_S:
-                # Stale batch after silence gap — flush then discard
-                if self._stats:
-                    self._stats.d2p_stale_flush += 1
-                self._flush_mix()
-                self._pending_frames.clear()
-                self._resampler = self._new_resampler()
-            elif age > _MIX_BATCH_THRESHOLD_S:
-                self._flush_mix()
-                self._pending_frames.clear()
-
-        if not self._pending_frames:
-            self._mix_start_time = now
-
-        user_key = user.id if user is not None else 0
-        self._pending_frames.append((user_key, stereo_to_mono(data.pcm)))
-
-    def cleanup(self) -> None:
-        self._flush_mix()
-        self._pending_frames.clear()
-
-
-async def rtp_send_loop(
-    discord_to_phone_queue: asyncio.Queue[bytes],
-    transport: asyncio.DatagramTransport,
-    remote_addr: tuple[str, int],
-    *,
-    stop_event: asyncio.Event,
-    stats: BridgeStats | None = None,
-) -> None:
-    """Dequeue ulaw payloads and send as RTP packets at 20ms intervals."""
-    ssrc = random.randint(0, 0xFFFFFFFF)
-    seq = random.randint(0, 0xFFFF)
-    timestamp = random.randint(0, 0xFFFFFFFF)
-    next_send = time.monotonic()
-    first = True
-    loop = asyncio.get_running_loop()
-
-    while not stop_event.is_set():
-        try:
-            payload = discord_to_phone_queue.get_nowait()
-            is_silence = False
-        except asyncio.QueueEmpty:
-            payload = ULAW_SILENCE_PAYLOAD
-            is_silence = True
+            arr_8k = resampler.resample_chunk(mixed)
+            payload = pcm16_arr_to_ulaw(arr_8k)
 
         packet = build_rtp_packet(seq, timestamp, ssrc, payload, marker=first)
         transport.sendto(packet, remote_addr)
@@ -213,9 +182,6 @@ async def rtp_send_loop(
             stats.rtp_frames_sent += 1
             if is_silence:
                 stats.rtp_silence_sent += 1
-            depth = discord_to_phone_queue.qsize()
-            if depth > stats.d2p_queue_depth_max:
-                stats.d2p_queue_depth_max = depth
 
         next_send += PTIME_MS / 1000.0
         now = time.monotonic()

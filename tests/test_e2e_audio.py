@@ -5,9 +5,10 @@ from functools import partial
 from unittest.mock import MagicMock, patch
 
 import discord.opus
+import numpy as np
 import pytest
 
-from frizzle_phone.bridge import PhoneAudioSink, rtp_send_loop
+from frizzle_phone.bridge import PhoneAudioSink, rtp_send_loop, stereo_to_mono
 from frizzle_phone.discord_patches import _patched_callback
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 from tests.audio_helpers import (
@@ -36,6 +37,26 @@ class _RtpCollector(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         self.packets.append(data)
+
+
+class _PacedSink(PhoneAudioSink):
+    """Sink that releases pre-computed frames one per drain() call.
+
+    Used in e2e tests to provide deterministic pacing without
+    depending on async timing between feeder and send loop.
+    """
+
+    def __init__(self, frames: list[tuple[int, np.ndarray]]) -> None:
+        super().__init__()
+        self._test_frames = frames
+        self._test_idx = 0
+
+    def drain(self) -> list[tuple[int, np.ndarray]]:
+        if self._test_idx < len(self._test_frames):
+            frame = self._test_frames[self._test_idx]
+            self._test_idx += 1
+            return [frame]
+        return []
 
 
 @pytest.mark.asyncio
@@ -86,31 +107,11 @@ async def test_dave_to_rtp_e2e(file_regression):
             pcm = decoder.decode(mock_packet.decrypted_data, fec=False)
             decoded_pcm_frames.append(pcm)
 
-    # Step 4 — Feed decoded PCM through PhoneAudioSink
-    loop_mock = MagicMock()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=500)
-    sink = PhoneAudioSink(q, loop_mock)
+    # Step 4 — Convert decoded stereo PCM to (user_key, mono) tuples
+    mono_frames = [(user_id, stereo_to_mono(pcm)) for pcm in decoded_pcm_frames]
 
-    user = MagicMock()
-    user.id = user_id
-
-    t = 1000.0
-    with patch("frizzle_phone.bridge.time") as mock_time:
-        for i, pcm_frame in enumerate(decoded_pcm_frames):
-            mock_time.monotonic.return_value = t + i * 0.020
-            data = MagicMock()
-            data.pcm = pcm_frame
-            sink.write(user, data)
-        sink.cleanup()
-
-    ulaw_payloads = []
-    for call in loop_mock.call_soon_threadsafe.call_args_list:
-        ulaw_payloads.append(call[0][1])
-
-    # Step 5 — Send ulaw over real UDP via rtp_send_loop
-    send_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=500)
-    for payload in ulaw_payloads:
-        send_q.put_nowait(payload)
+    # Step 5 — Send over real UDP via rtp_send_loop with paced sink
+    sink = _PacedSink(mono_frames)
 
     loop = asyncio.get_running_loop()
     collector = _RtpCollector()
@@ -123,11 +124,14 @@ async def test_dave_to_rtp_e2e(file_regression):
     )
 
     stop_event = asyncio.Event()
-    expected_count = len(ulaw_payloads)
+    expected_count = len(mono_frames)
 
     task = asyncio.create_task(
         rtp_send_loop(
-            send_q, send_transport, ("127.0.0.1", recv_port), stop_event=stop_event
+            sink,
+            send_transport,
+            ("127.0.0.1", recv_port),
+            stop_event=stop_event,
         )
     )
 
