@@ -8,8 +8,8 @@ BASE_URL="http://127.0.0.1:${WEB_PORT}"
 passed=0
 failed=0
 
-pass() { echo "  PASS: $1"; ((passed++)); }
-fail() { echo "  FAIL: $1"; ((failed++)); }
+pass() { echo "  PASS: $1"; (( ++passed )); }
+fail() { echo "  FAIL: $1"; (( ++failed )); }
 
 # ── Wait for web server ──────────────────────────────────────────────
 echo "Waiting for web server on port ${WEB_PORT}..."
