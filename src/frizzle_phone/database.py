@@ -72,3 +72,16 @@ async def run_migrations(pool: asyncpg.Pool) -> int:
     else:
         logger.info("No pending migrations")
     return count
+
+
+async def cleanup_stale_calls(pool: asyncpg.Pool) -> int:
+    """Mark any ringing/active calls as failed (stale from prior crash)."""
+    result = await pool.execute(
+        "UPDATE calls SET status = 'failed', ended_at = now()"
+        " WHERE status IN ('ringing', 'active')"
+    )
+    # asyncpg returns "UPDATE N"
+    count = int(result.split()[-1])
+    if count:
+        logger.warning("Cleaned up %d stale call(s) from previous run", count)
+    return count
