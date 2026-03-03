@@ -31,6 +31,7 @@ class BridgeStats:
         self.d2p_frames_mixed: int = 0
         self.d2p_frames_dropped: int = 0
         self.d2p_stale_flush: int = 0
+        self.d2p_queue_depth: int = 0
         self.d2p_max_write_gap: float = 0.0
         self._d2p_last_write: float = 0.0
         self._d2p_gap_warnings: int = 0
@@ -62,6 +63,7 @@ class BridgeStats:
             "d2p_mixed": self.d2p_frames_mixed,
             "d2p_dropped": self.d2p_frames_dropped,
             "d2p_stale": self.d2p_stale_flush,
+            "d2p_qdepth": self.d2p_queue_depth,
             "d2p_max_gap": self.d2p_max_write_gap,
             "d2p_gap_warns": self._d2p_gap_warnings,
             "p2d_in": self.p2d_frames_in,
@@ -79,13 +81,14 @@ class BridgeStats:
 
         logger.info(
             "bridge stats | d2p in=%d mixed=%d dropped=%d stale=%d "
-            "max_gap=%.1fms | p2d in=%d overflow=%d reads=%d "
+            "qdepth=%d max_gap=%.1fms | p2d in=%d overflow=%d reads=%d "
             "silence=%d max_gap=%.1fms | rtp sent=%d silence=%d "
             "overshoot=%.1fms",
             snap["d2p_in"],
             snap["d2p_mixed"],
             snap["d2p_dropped"],
             snap["d2p_stale"],
+            snap["d2p_qdepth"],
             snap["d2p_max_gap"] * 1000,
             snap["p2d_in"],
             snap["p2d_overflow"],

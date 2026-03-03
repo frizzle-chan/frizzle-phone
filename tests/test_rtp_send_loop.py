@@ -159,6 +159,30 @@ async def test_records_stats(_mock_rand):
 
 
 @pytest.mark.asyncio
+@patch("frizzle_phone.bridge.random.randint", side_effect=[_SSRC, 0, 0])
+async def test_burst_frames_all_consumed(_mock_rand):
+    """Burst of 3 frames for same user → queued and consumed over 3 ticks, no drops."""
+    stop = asyncio.Event()
+    transport = _StoppingTransport(stop, max_packets=4)
+    sink = PhoneAudioSink()
+    stats = BridgeStats()
+
+    user = MagicMock()
+    user.id = 1
+    for _ in range(3):
+        data = MagicMock()
+        data.pcm = np.full(1920, 1000, dtype=np.int16).tobytes()
+        sink.write(user, data)
+
+    with patch("asyncio.sleep", new=_noop_sleep):
+        await rtp_send_loop(sink, transport, _ADDR, stop_event=stop, stats=stats)
+
+    assert stats.d2p_frames_mixed == 3
+    assert stats.d2p_frames_dropped == 0
+    assert stats.rtp_silence_sent == 1
+
+
+@pytest.mark.asyncio
 async def test_drift_correction_snaps_forward():
     """When wall clock jumps ahead >1 ptime, next_send snaps to now."""
     stop = asyncio.Event()

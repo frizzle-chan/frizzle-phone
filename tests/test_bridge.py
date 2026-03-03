@@ -141,8 +141,8 @@ def test_phone_audio_sink_drain_five_speakers_one_slot():
     assert ulaw != b"\xff" * 160  # not silence
 
 
-def test_phone_audio_sink_burst_keeps_last_slot():
-    """Burst delivery (multiple epochs) → slot grouping keeps only last slot."""
+def test_phone_audio_sink_burst_creates_multiple_slots():
+    """Burst delivery (multiple epochs) → slot grouping creates multiple slots."""
     sink = PhoneAudioSink(stats=BridgeStats())
 
     # Simulate 3 epochs of user 1 speaking: user_key repeats → multiple slots
@@ -168,11 +168,7 @@ def test_phone_audio_sink_burst_keeps_last_slot():
         slots.append(current_slot)
 
     assert len(slots) == 3  # 3 separate slots (key repeats)
-
-    # rtp_send_loop keeps only the last for freshness
-    kept = slots[-1]
-    assert len(kept) == 1
-    assert 1 in kept
+    assert all(1 in s for s in slots)
 
 
 def test_phone_audio_sink_cleanup_drains():
