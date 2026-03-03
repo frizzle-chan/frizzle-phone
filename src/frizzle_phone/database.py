@@ -58,7 +58,11 @@ async def run_migrations(db: aiosqlite.Connection) -> int:
             for line in sql.splitlines()
         ):
             continue
-        await db.executescript(sql)
+        await db.execute("BEGIN")
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                await db.execute(stmt)
         await db.execute(
             "INSERT INTO schema_migrations (version, filename) VALUES (?, ?)",
             (version, path.name),

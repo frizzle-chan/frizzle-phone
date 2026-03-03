@@ -90,7 +90,7 @@ async def _post_handler(
                 (ext, audio_name),
             )
         await db.commit()
-    except:
+    except Exception:
         await db.rollback()
         raise
 
