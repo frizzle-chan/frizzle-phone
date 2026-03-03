@@ -12,6 +12,7 @@ import queue
 import random
 import threading
 import time
+from collections import deque
 
 import discord
 import numpy as np
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
+MAX_SLOT_QUEUE = 5  # 100ms max buffer, bounds latency
 
 
 def stereo_to_mono(data: bytes) -> np.ndarray:
@@ -126,37 +128,41 @@ async def rtp_send_loop(
     loop = asyncio.get_running_loop()
     resampler = _new_resampler()
     was_silent = True
+    slot_queue: deque[dict[int, np.ndarray]] = deque()
 
     while not stop_event.is_set():
+        # 1. Drain new frames into slots
         frames = sink.drain()
-
-        if not frames:
-            payload = ULAW_SILENCE_PAYLOAD
-            is_silence = True
-            if not was_silent:
-                # Reset resampler after silence gap to avoid state bleed
-                resampler = _new_resampler()
-            was_silent = True
-        else:
-            is_silence = False
-            was_silent = False
-
-            # Group into time slots — new slot starts when a user_key repeats.
-            slots: list[dict[int, np.ndarray]] = []
+        if frames:
             current_slot: dict[int, np.ndarray] = {}
             for user_key, mono in frames:
                 if user_key in current_slot:
-                    slots.append(current_slot)
+                    slot_queue.append(current_slot)
                     current_slot = {}
                 current_slot[user_key] = mono
             if current_slot:
-                slots.append(current_slot)
+                slot_queue.append(current_slot)
 
-            # Keep only the last slot for freshness / low latency
-            if len(slots) > 1 and stats:
-                stats.d2p_frames_dropped += len(slots) - 1
-                stats.d2p_stale_flush += 1
-            slot = slots[-1]
+            # Cap queue — drop oldest if overflowing
+            while len(slot_queue) > MAX_SLOT_QUEUE:
+                slot_queue.popleft()
+                if stats:
+                    stats.d2p_frames_dropped += 1
+
+        if stats:
+            stats.d2p_queue_depth = max(stats.d2p_queue_depth, len(slot_queue))
+
+        # 2. Pop one slot or send silence
+        if not slot_queue:
+            payload = ULAW_SILENCE_PAYLOAD
+            is_silence = True
+            if not was_silent:
+                resampler = _new_resampler()
+            was_silent = True
+        else:
+            slot = slot_queue.popleft()
+            is_silence = False
+            was_silent = False
 
             if stats:
                 stats.d2p_frames_mixed += 1
