@@ -1,12 +1,12 @@
 # frizzle-phone
 
-Discord bot using discord.py with asyncpg/PostgreSQL for persistence.
+Discord bot using discord.py with aiosqlite/SQLite for persistence.
 
 ## Project Structure
 
 - `src/frizzle_phone/` - main package source
 - `tests/` - test files (`test_*.py` and `*_unit_test.py` patterns)
-- `migrations/` - SQL migration files (checked by squawk)
+- `migrations/` - SQL migration files (SQLite-compatible)
 - `main.py` - entrypoint (used by Dockerfile CMD)
 
 ## Development
@@ -15,14 +15,14 @@ Package manager: **uv** (not pip). Always use `uv run` to execute tools.
 
 ### Devcontainer
 
-The project uses a devcontainer with PostgreSQL. The justfile auto-detects whether you're inside the devcontainer or on the host:
+The project uses a devcontainer. The justfile auto-detects whether you're inside the devcontainer or on the host:
 
 - **Inside devcontainer**: commands run directly
 - **On the host**: commands are wrapped with `devcontainer exec --workspace-folder .`
 
 To start the devcontainer: `just up` (or `devcontainer up --workspace-folder .`)
 
-Tests require the devcontainer's PostgreSQL (`DATABASE_URL` is set automatically inside the container). If running from the host, `just test` handles the exec automatically.
+Tests use in-memory SQLite and don't require any external database.
 
 ### Running the Server
 
@@ -30,7 +30,7 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 
 ### Common Commands (via justfile)
 
-- `just` - run all checks (lint, format, types, squawk, vulture)
+- `just` - run all checks (lint, format, types, vulture)
 - `just test` - run tests
 - `just testq` - run tests quick (`-qx --tb=line`)
 - `just coverage` - run tests with HTML coverage report
@@ -38,8 +38,7 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 - `just format` - ruff format
 - `just types` - ty type check
 - `just vulture` - dead code check
-- `just resetdb` - drop and recreate dev database schema
-- `just squawk` - lint SQL migrations
+- `just resetdb` - delete local SQLite database
 - `just up` - start the devcontainer
 
 ### CI Checks (all must pass)
@@ -49,7 +48,7 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 3. `uv run ty check` - type check
 4. `uv run vulture` - dead code detection
 5. `uv run pytest` - tests with coverage
-6. `uv run squawk migrations/*.sql` - SQL migration lint (skipped if no files)
+6. Docker smoke test - builds production image, starts container, runs web + SIP checks
 
 ### Logs
 
@@ -57,7 +56,7 @@ Application logs are written to `frizzle-phone.log` in the project root.
 
 ### Pre-commit Hooks (lefthook)
 
-Lefthook runs ruff, ty, vulture, squawk, and pytest on pre-commit. Direct commits to `master` are blocked by a branch guard.
+Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `master` are blocked by a branch guard.
 
 ## Conventions
 

@@ -4,7 +4,7 @@
 # eventually be extracted into focused modules:
 #   1. SIP protocol parsing/routing (datagram_received, handler dispatch)
 #   2. SIP transaction lifecycle (INVITE txn setup, Timer G/H/I)
-#   3. Database persistence (INSERT/UPDATE via asyncpg)
+#   3. Database persistence (INSERT/UPDATE via aiosqlite)
 #   4. Discord voice channel orchestration (guild/channel lookup, voice connect)
 #   5. Call state management (Call lifecycle, _PendingBridge → DiscordBridgeContext)
 #   6. RTP port reservation and stream lifecycle
@@ -17,9 +17,10 @@ import asyncio
 import dataclasses
 import logging
 import socket
+import uuid
 from collections.abc import Callable, Coroutine
 
-import asyncpg
+import aiosqlite
 import discord
 from discord.ext import commands, voice_recv
 
@@ -184,7 +185,7 @@ class SipServer(asyncio.DatagramProtocol):
         self,
         *,
         server_ip: str,
-        pool: asyncpg.Pool,
+        db: aiosqlite.Connection,
         audio_buffers: dict[str, bytes],
         bot: commands.Bot,
         bridge_manager: BridgeManager | None = None,
@@ -195,7 +196,7 @@ class SipServer(asyncio.DatagramProtocol):
         self._rtp_tasks: set[asyncio.Task[None]] = set()
         self._bg_tasks: set[asyncio.Task[object]] = set()
         self._server_ip = server_ip
-        self._pool = pool
+        self._db = db
         self._audio_buffers = audio_buffers
         self._bot = bot
         self._bridge_manager = bridge_manager or BridgeManager()
@@ -420,29 +421,32 @@ class SipServer(asyncio.DatagramProtocol):
         when the caller already has an active Discord call.
         """
         # Check discord_extensions first
-        row = await self._pool.fetchrow(
-            "SELECT guild_id, channel_id FROM discord_extensions WHERE extension = $1",
-            extension,
+        cursor = await self._db.execute(
+            "SELECT guild_id, channel_id FROM discord_extensions WHERE extension = ?",
+            (extension,),
         )
+        row = await cursor.fetchone()
         if row is not None:
             guild_id: int = row["guild_id"]
             channel_id: int = row["channel_id"]
 
             # App-layer check: one active discord call per phone
-            existing_call = await self._pool.fetchrow(
-                "SELECT id FROM calls WHERE caller_addr = $1"
+            cursor = await self._db.execute(
+                "SELECT id FROM calls WHERE caller_addr = ?"
                 " AND status IN ('ringing', 'active') AND guild_id IS NOT NULL",
-                caller_addr,
+                (caller_addr,),
             )
+            existing_call = await cursor.fetchone()
             if existing_call is not None:
                 raise _BusyError(caller_addr)
             return _ExtensionResult(guild_id=guild_id, channel_id=channel_id)
 
         # Check audio_extensions
-        audio_row = await self._pool.fetchrow(
-            "SELECT audio_name FROM audio_extensions WHERE extension = $1",
-            extension,
+        cursor = await self._db.execute(
+            "SELECT audio_name FROM audio_extensions WHERE extension = ?",
+            (extension,),
         )
+        audio_row = await cursor.fetchone()
         if audio_row is not None:
             audio_buf = self._audio_buffers.get(audio_row["audio_name"])
             if audio_buf is not None:
@@ -480,16 +484,21 @@ class SipServer(asyncio.DatagramProtocol):
                 resp_addr,
             )
             # Log failed call
-            await self._pool.execute(
-                "INSERT INTO calls (sip_call_id, extension, caller_addr, status,"
+            call_uuid = str(uuid.uuid4())
+            await self._db.execute(
+                "INSERT INTO calls (id, sip_call_id, extension, caller_addr, status,"
                 " guild_id, channel_id)"
-                " VALUES ($1, $2, $3, 'failed', $4, $5)",
-                msg.header("Call-ID") or "",
-                extension,
-                caller_addr,
-                None,
-                None,
+                " VALUES (?, ?, ?, ?, 'failed', ?, ?)",
+                (
+                    call_uuid,
+                    msg.header("Call-ID") or "",
+                    extension,
+                    caller_addr,
+                    None,
+                    None,
+                ),
             )
+            await self._db.commit()
             return
 
         # RFC 3261 §17.2.1: send 100 Trying to quench INVITE
@@ -514,16 +523,21 @@ class SipServer(asyncio.DatagramProtocol):
             self._terminate_call(existing)
 
         # Log call to DB
-        db_call_id = await self._pool.fetchval(
-            "INSERT INTO calls (sip_call_id, extension, caller_addr, status,"
+        db_call_id = str(uuid.uuid4())
+        await self._db.execute(
+            "INSERT INTO calls (id, sip_call_id, extension, caller_addr, status,"
             " guild_id, channel_id)"
-            " VALUES ($1, $2, $3, 'ringing', $4, $5) RETURNING id",
-            call_id,
-            extension,
-            caller_addr,
-            result.guild_id,
-            result.channel_id,
+            " VALUES (?, ?, ?, ?, 'ringing', ?, ?)",
+            (
+                db_call_id,
+                call_id,
+                extension,
+                caller_addr,
+                result.guild_id,
+                result.channel_id,
+            ),
         )
+        await self._db.commit()
 
         rtp_port = await self._reserve_rtp_port()
         call = Call(
@@ -537,7 +551,7 @@ class SipServer(asyncio.DatagramProtocol):
             audio_buf=result.audio_buf,
             rtp_port=rtp_port,
             invite_request=msg,
-            db_call_id=str(db_call_id) if db_call_id else None,
+            db_call_id=db_call_id,
         )
         self._calls[call_id] = call
 
@@ -907,17 +921,18 @@ class SipServer(asyncio.DatagramProtocol):
         """Update a call's status in the database."""
         try:
             if status == "active":
-                await self._pool.execute(
-                    "UPDATE calls SET status = $1, answered_at = now() WHERE id = $2",
-                    status,
-                    db_call_id,
+                await self._db.execute(
+                    "UPDATE calls SET status = ?, answered_at = datetime('now')"
+                    " WHERE id = ?",
+                    (status, db_call_id),
                 )
             elif status in ("completed", "failed"):
-                await self._pool.execute(
-                    "UPDATE calls SET status = $1, ended_at = now() WHERE id = $2",
-                    status,
-                    db_call_id,
+                await self._db.execute(
+                    "UPDATE calls SET status = ?, ended_at = datetime('now')"
+                    " WHERE id = ?",
+                    (status, db_call_id),
                 )
+            await self._db.commit()
         except Exception:
             self._db_update_errors += 1
             logger.exception(
@@ -965,14 +980,12 @@ async def start_server(
     port: int = 5060,
     *,
     server_ip: str,
-    pool: asyncpg.Pool,
+    db: aiosqlite.Connection,
     audio_buffers: dict[str, bytes],
     bot: commands.Bot,
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(
-        server_ip=server_ip, pool=pool, audio_buffers=audio_buffers, bot=bot
-    )
+    server = SipServer(server_ip=server_ip, db=db, audio_buffers=audio_buffers, bot=bot)
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )

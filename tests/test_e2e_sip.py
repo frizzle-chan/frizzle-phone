@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-import asyncpg
+import aiosqlite
 import pytest
 import pytest_asyncio
 
@@ -140,13 +140,13 @@ def _build_bye(
 
 
 @pytest_asyncio.fixture
-async def sip_endpoint(seeded_pool: asyncpg.Pool):
+async def sip_endpoint(seeded_db: aiosqlite.Connection):
     """Start a SipServer on an OS-assigned port with a 1-packet audio buffer."""
     transport, server = await start_server(
         "127.0.0.1",
         0,
         server_ip="127.0.0.1",
-        pool=seeded_pool,
+        db=seeded_db,
         audio_buffers={"techno": b"\x7f" * 160},
         bot=MagicMock(),
     )

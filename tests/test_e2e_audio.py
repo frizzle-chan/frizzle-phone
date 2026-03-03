@@ -160,6 +160,7 @@ async def test_dave_to_rtp_e2e(file_regression):
     wav_bytes = pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)
 
     # Opus encode/decode amplifies soxr platform jitter — use wider thresholds
-    # than the direct-PCM golden tests (observed cross-platform RMSE ~108).
-    check_fn = partial(wav_samples_check, max_rmse=250.0, min_correlation=0.98)
+    # than the direct-PCM golden tests (observed cross-platform RMSE ~108 on
+    # Ubuntu, ~311 on Arch due to libopus/soxr build differences).
+    check_fn = partial(wav_samples_check, max_rmse=350.0, min_correlation=0.98)
     file_regression.check(wav_bytes, binary=True, extension=".wav", check_fn=check_fn)

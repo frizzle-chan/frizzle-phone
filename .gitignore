@@ -200,5 +200,8 @@ img-dist/
 # Dev server PID file
 frizzle-phone.pid
 
+# SQLite database
+frizzle-phone.db*
+
 # Git worktrees
 .worktrees/

@@ -64,3 +64,66 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             GIT_COMMIT=${{ github.sha }}
+
+      - name: Export smoke test image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          push: false
+          target: production
+          platforms: linux/amd64
+          tags: frizzle-phone:smoke
+          outputs: type=docker,dest=/tmp/smoke-image.tar
+          cache-from: type=gha
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Upload smoke test image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-image
+          path: /tmp/smoke-image.tar
+          retention-days: 1
+
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SIP_PORT: "15060"
+      WEB_PORT: "18080"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download smoke test image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: smoke-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/smoke-image.tar
+
+      - name: Start server
+        run: |
+          docker run -d --name smoke-server \
+            --network host \
+            -e DISCORD_TOKEN="${{ secrets.DISCORD_TOKEN }}" \
+            -e SIP_PORT=${{ env.SIP_PORT }} \
+            -e WEB_PORT=${{ env.WEB_PORT }} \
+            frizzle-phone:smoke
+
+      - name: Run smoke tests
+        run: bash scripts/smoke-test.sh
+
+      - name: Server logs
+        if: always()
+        run: docker logs smoke-server
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f smoke-server
