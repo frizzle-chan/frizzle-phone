@@ -135,10 +135,15 @@ def test_phone_audio_sink_drain_five_speakers_one_slot():
         np.sum(list(slot.values()), axis=0, dtype=np.int32), -32768, 32767
     ).astype(np.int16)
     resampler = _new_resampler()
-    arr_8k = resampler.resample_chunk(mixed)
-    ulaw = pcm16_arr_to_ulaw(arr_8k)
-    assert len(ulaw) == 160
-    assert ulaw != b"\xff" * 160  # not silence
+    # Feed multiple frames to prime the sinc filter — LQ needs a few
+    # input chunks before producing output.
+    all_ulaw = b""
+    for _ in range(5):
+        for chunk_8k in resampler.feed(mixed):
+            all_ulaw += pcm16_arr_to_ulaw(chunk_8k)
+    assert len(all_ulaw) > 0, "Resampler should produce output after multiple feeds"
+    assert len(all_ulaw) % 160 == 0, "Output should be multiples of 160 bytes"
+    assert all_ulaw[:160] != b"\xff" * 160  # not silence
 
 
 def test_phone_audio_sink_burst_creates_multiple_slots():

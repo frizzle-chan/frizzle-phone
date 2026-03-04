@@ -67,8 +67,8 @@ def _run_sink(
                 32767,
             ).astype(np.int16)
 
-        arr_8k = resampler.resample_chunk(mixed)
-        ulaw_payloads.append(pcm16_arr_to_ulaw(arr_8k))
+        for chunk_8k in resampler.feed(mixed):
+            ulaw_payloads.append(pcm16_arr_to_ulaw(chunk_8k))
 
     ulaw_bytes = b"".join(ulaw_payloads)
     pcm_8k = ulaw_to_pcm(ulaw_bytes)

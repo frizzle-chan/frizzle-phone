@@ -9,7 +9,9 @@ def test_rtp_receive_extracts_payload():
     q: queue.Queue[bytes] = queue.Queue()
     proto = RtpReceiveProtocol(q)
     payload = b"\xff" * 160
-    proto.datagram_received(build_rtp_packet(payload), ("127.0.0.1", 9000))
+    # LQ sinc resampler needs a few input packets to prime the filter
+    for _ in range(10):
+        proto.datagram_received(build_rtp_packet(payload), ("127.0.0.1", 9000))
     assert not q.empty()
 
 
@@ -24,7 +26,8 @@ def test_rtp_receive_handles_csrc():
     q: queue.Queue[bytes] = queue.Queue()
     proto = RtpReceiveProtocol(q)
     payload = b"\xff" * 160
-    proto.datagram_received(build_rtp_packet(payload, cc=2), ("127.0.0.1", 9000))
+    for _ in range(10):
+        proto.datagram_received(build_rtp_packet(payload, cc=2), ("127.0.0.1", 9000))
     assert not q.empty()
 
 
@@ -32,21 +35,25 @@ def test_rtp_receive_handles_extension():
     q: queue.Queue[bytes] = queue.Queue()
     proto = RtpReceiveProtocol(q)
     payload = b"\xff" * 160
-    proto.datagram_received(
-        build_rtp_packet(payload, extension=True), ("127.0.0.1", 9000)
-    )
+    for _ in range(10):
+        proto.datagram_received(
+            build_rtp_packet(payload, extension=True), ("127.0.0.1", 9000)
+        )
     assert not q.empty()
 
 
 def test_rtp_receive_drops_oldest_on_overflow():
     """When p2d queue is full, oldest frame is dropped and new frame enqueued."""
-    q: queue.Queue[bytes] = queue.Queue(maxsize=1)
+    q: queue.Queue[bytes] = queue.Queue(maxsize=2)
     old_frame = b"old_frame_marker"
     q.put(old_frame)
     stats = BridgeStats()
     proto = RtpReceiveProtocol(q, stats=stats)
-    proto.datagram_received(build_rtp_packet(b"\xff" * 160), ("127.0.0.1", 9000))
-    assert stats.p2d_queue_overflow == 1
-    assert q.qsize() == 1
-    frame = q.get_nowait()
-    assert frame != old_frame  # old was dropped, new was enqueued
+    # Feed enough packets to prime the sinc resampler and overflow
+    for _ in range(20):
+        proto.datagram_received(build_rtp_packet(b"\xff" * 160), ("127.0.0.1", 9000))
+    assert stats.p2d_queue_overflow >= 1
+    # Old marker frame should have been dropped
+    while not q.empty():
+        frame = q.get_nowait()
+        assert frame != old_frame

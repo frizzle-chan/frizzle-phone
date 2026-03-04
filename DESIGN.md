@@ -19,7 +19,7 @@ graph LR
 - **Audio Bridge** ([`bridge.py`](src/frizzle_phone/bridge.py), [`bridge_manager.py`](src/frizzle_phone/bridge_manager.py)): Bidirectional real-time audio pipe between SIP/RTP and Discord voice. Strict 20ms packet cadence (both G.711 and Discord Opus use 20ms frames). Slot-based mixer handles receiving multiple simultaneous Discord speakers.
   - **p2d** (phone→Discord): decode G.711 μ-law, resample 8kHz→48kHz, stereo out to Discord
   - **d2p** (Discord→phone): mix speakers, resample 48kHz→8kHz, encode μ-law out to RTP
-- **RTP** ([`rtp/`](src/frizzle_phone/rtp/)): Send/receive UDP media. PCMU (G.711 μ-law, payload type 0) at 8kHz. Includes codec implementation with precomputed lookup tables and `soxr` resampling.
+- **RTP** ([`rtp/`](src/frizzle_phone/rtp/)): Send/receive UDP media. PCMU (G.711 μ-law, payload type 0) at 8kHz. Includes codec implementation with precomputed lookup tables and `soxr` resampling (`LQ` sinc-based quality — see [Resampling](#resampling) below).
 - **Synth** ([`synth.py`](src/frizzle_phone/synth.py)): Procedural 8kHz audio generator. TR-808 drum synthesis + Reese bass for a techno loop, plus simple tone beeps. Pre-rendered at startup for audio extensions.
 
 ### Discord Bot
@@ -91,7 +91,7 @@ graph LR
         direction TB
         DRAIN["drain()"] -->|group by user| SLOTS[Slot queue]
         SLOTS -->|pop 1 slot| MIX{"Mix if multiple<br/>speakers"}
-        MIX --> RS["Resample 48→8kHz"]
+        MIX --> RS["Resample 48→8kHz<br/>(ChunkedResampler)"]
         RS --> RTP["μ-law → RTP → phone"]
     end
 ```
@@ -139,3 +139,14 @@ Queue caps at 50 slots (~1s); oldest dropped on overflow.
 **Timing:** The `rtp_send_loop` runs on a strict 20ms wall-clock cadence using `time.monotonic()`. If the loop falls behind (e.g. event loop congestion), it snaps forward to avoid bursting catch-up packets. The resampler is reset after silence gaps to avoid filtering stale state.
 
 **Mixing:** When a slot has multiple speakers, their mono samples are summed in int32 and clipped back to int16. Single-speaker slots skip the mix entirely.
+
+### Resampling
+
+Both directions use `soxr.LQ` (sinc-based, ~96dB stopband rejection) via `ChunkedResampler`, a wrapper that accumulates soxr's bursty output and yields fixed-size chunks.
+
+**Why `LQ`, not `QQ` or `HQ`:**
+- `QQ` (cubic interpolation) has **no anti-aliasing filter**. The 6:1 decimation on the d2p path (48kHz→8kHz) folds spectral content above 4kHz back into the voice band as audible aliasing artifacts — metallic harshness and reduced intelligibility.
+- `LQ` uses a sinc-based FIR filter with ~96dB stopband attenuation, more than sufficient for telephony (G.712 specifies the 0–3.4kHz passband). CPU cost is negligible for mono 8kHz voice.
+- `HQ`/`VHQ` add 7+ frames (~140ms) of group delay before any output, which is too much for interactive voice. `LQ` primes in ~2-3 frames (~40-60ms).
+
+**Why `ChunkedResampler`:** Sinc-based soxr modes (`LQ`+) buffer internally and emit samples in variable-size bursts rather than a steady 1:ratio output. `ChunkedResampler` accumulates resampler output and yields exactly the expected frame size (160 samples at 8kHz for d2p, 960 samples at 48kHz for p2d) so the rest of the pipeline sees a consistent chunk per feed.
