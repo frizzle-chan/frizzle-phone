@@ -14,7 +14,7 @@ from frizzle_phone.bridge import (
     ChunkedResampler,
 )
 from frizzle_phone.bridge_stats import BridgeStats
-from frizzle_phone.rtp import pcmu
+from frizzle_phone.rtp import pcmu, stream
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,13 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         if len(data) < 12:
+            return
+        # RFC 3550 §5.1: reject non-V2 packets
+        if (data[0] >> 6) != 2:
+            return
+        # Reject non-PCMU payloads (comfort noise, telephone-event, etc.)
+        pt = data[1] & 0x7F
+        if pt != stream.PAYLOAD_TYPE_PCMU:
             return
         # Parse variable-length RTP header
         cc = data[0] & 0x0F
