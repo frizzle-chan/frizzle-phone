@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-rfcs=(3261 2617 4566 3264 3550 3551 3665)
+rfcs=(3261 2617 4566 3264 3550 3551 3665 6026 3581 5626 4733 3389)
 
 for rfc in "${rfcs[@]}"; do
     file="rfc${rfc}.txt"
