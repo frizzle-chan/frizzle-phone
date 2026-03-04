@@ -59,6 +59,10 @@ Application logs are written to `frizzle-phone.log` in the project root.
 
 Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `master` are blocked by a branch guard.
 
+## Documentation
+
+- `DESIGN.md` documents the architecture, call flow, and audio pipeline — keep it up to date when changing components, call flow, or audio bridge logic
+
 ## Conventions
 
 - PR target branch: `main`
