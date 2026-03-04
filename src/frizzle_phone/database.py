@@ -10,7 +10,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+_MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 _FILENAME_RE = re.compile(r"^(\d+)_.*\.sql$")
 
 

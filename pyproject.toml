@@ -1,6 +1,6 @@
 [project]
 name = "frizzle-phone"
-version = "0.1.0"
+version = "1.0.0"
 description = ""
 readme = "README.md"
 requires-python = ">=3.13"
@@ -13,6 +13,9 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "soxr>=0.5.0",
 ]
+
+[project.scripts]
+frizzle-phone = "frizzle_phone.__main__:cli"
 
 [build-system]
 requires = ["hatchling"]
@@ -50,7 +53,7 @@ skip_empty = true
 exclude = ["vulture_whitelist.py"]
 
 [tool.vulture]
-paths = ["src/frizzle_phone/", "main.py", "tests/", "vulture_whitelist.py"]
+paths = ["src/frizzle_phone/", "tests/", "vulture_whitelist.py"]
 min_confidence = 60
 ignore_names = ["clean_user_state", "datagram_received", "connection_made", "connection_lost", "error_received", "header_values", "event_loop", "FakeTransport", "sendto", "seeded_db", "voice_channels", "get_transport", "PhoneAudioSink", "is_opus", "cleanup", "wants_opus", "write", "row_factory", "rtp_send_loop", "_bot", "on_voice_state_update", "hangup_by_voice_channel", "get_bridged_calls", "cog_load", "cog_unload"]
 exclude = ["*_unit_test.py", "*_image_test.py"]

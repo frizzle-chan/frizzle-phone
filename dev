@@ -12,7 +12,7 @@ fi
 
 if [ -f /.dockerenv ]; then
     exec > >(tee frizzle-phone.log) 2>&1
-    exec uv run python main.py
+    exec uv run frizzle-phone
 else
-    devcontainer exec --workspace-folder . uv run python main.py 2>&1 | tee frizzle-phone.log
+    devcontainer exec --workspace-folder . uv run frizzle-phone 2>&1 | tee frizzle-phone.log
 fi

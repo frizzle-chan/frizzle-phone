@@ -111,7 +111,12 @@ async def main() -> None:
         await db.close()
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console script entry point."""
     PID_FILE = Path("frizzle-phone.pid")
     PID_FILE.write_text(str(os.getpid()))
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()
