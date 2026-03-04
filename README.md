@@ -2,7 +2,7 @@
 
 [![codecov](https://codecov.io/gh/frizzle-chan/frizzle-phone/graph/badge.svg?token=RQSA7M18EY)](https://codecov.io/gh/frizzle-chan/frizzle-phone)
 
-frizzle-phone allows you use your favorite SIP VoIP phone to call into your favorite Discord voice channels.
+frizzle-phone allows you to use your favorite SIP VoIP phone to call into your favorite Discord voice channels.
 
 For instance you can make it so dialing extension 100 will call your home server's vc and maybe extension 200 calls into your friend's server.
 
