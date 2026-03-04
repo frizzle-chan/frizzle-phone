@@ -9,6 +9,8 @@ For instance you can make it so dialing extension 100 will call your home server
 frizzle-phone is completely self-contained, you just run the server and point your SIP phone at it.
 No other infrastructure is needed.
 
+See [DESIGN.md](DESIGN.md) for architecture and internals.
+
 ## Features
 
 - Functions as a SIP server that bridges Discord voice channel audio to your VoIP phone.
