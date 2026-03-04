@@ -75,7 +75,7 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 When creating PRs with `gh pr create`, apply appropriate labels with `--label`:
 - `breaking-change` — requires end-user action beyond updating the app version (e.g. config changes, manual migration, env var renames, Python version upgrades)
 - `bug` — bug fixes
-- `enhancement` — new features or improvements
+- `enhancement` — new user-facing features or improvements (not meta/infra changes like CI, tooling, or repo config)
 - `documentation` — docs-only changes
 - `ci` — CI/CD, Docker, devcontainer changes
 - `sip` — SIP/RTP/SDP protocol changes
