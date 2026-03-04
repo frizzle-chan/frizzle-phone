@@ -47,7 +47,7 @@ RUN echo "${GIT_COMMIT}" > /app/.commit_sha
 RUN --mount=type=cache,target=/home/frizzle_phone/.cache/uv,uid=1000,gid=1000 \
     uv sync --locked
 
-CMD [ "python", "main.py" ]
+CMD [ "frizzle-phone" ]
 
 FROM production AS devcontainer
 

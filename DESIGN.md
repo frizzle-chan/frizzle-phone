@@ -32,7 +32,7 @@ graph LR
 
 ### Database
 
-[`database.py`](src/frizzle_phone/database.py), [`migrations/`](migrations/): SQLite with aiosqlite. Stores extension mappings (discord and audio), call log, and enforces one active call per caller via partial unique index.
+[`database.py`](src/frizzle_phone/database.py), [`migrations/`](src/frizzle_phone/migrations/): SQLite with aiosqlite. Stores extension mappings (discord and audio), call log, and enforces one active call per caller via partial unique index.
 
 ## Call Flow
 

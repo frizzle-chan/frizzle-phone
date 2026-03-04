@@ -6,8 +6,8 @@ Discord bot using discord.py with aiosqlite/SQLite for persistence.
 
 - `src/frizzle_phone/` - main package source
 - `tests/` - test files (`test_*.py` and `*_unit_test.py` patterns)
-- `migrations/` - SQL migration files (SQLite-compatible)
-- `main.py` - entrypoint (used by Dockerfile CMD)
+- `src/frizzle_phone/migrations/` - SQL migration files (SQLite-compatible)
+- `src/frizzle_phone/__main__.py` - entrypoint (`frizzle-phone` console script / `python -m frizzle_phone`)
 
 ## Development
 
@@ -48,8 +48,9 @@ Always use `./dev` to launch the server (Docker-based, uses `--network host`).
 3. `uv run ty check` - type check
 4. `uv run vulture` - dead code detection
 5. `uv run pytest` - tests with coverage
-6. Docker smoke test - builds production image, starts container, runs web + SIP checks
-7. CodeQL security scanning — `github-advanced-security[bot]` review comments block merge and must be resolved
+6. Packaging test - builds wheel, installs in fresh venv, verifies imports/resources/console script
+7. Docker smoke test - builds production image, starts container, runs web + SIP checks
+8. CodeQL security scanning — `github-advanced-security[bot]` review comments block merge and must be resolved
 
 ### Logs
 
