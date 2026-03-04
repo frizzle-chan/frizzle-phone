@@ -1,3 +1,6 @@
+breaking-change:
+  - head-branch: ['^breaking/', '^break/']
+
 bug:
   - head-branch: ['^fix/', '^bugfix/', '^hotfix/']
 
