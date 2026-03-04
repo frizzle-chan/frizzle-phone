@@ -166,15 +166,8 @@ async def test_burst_frames_all_consumed(_mock_rand):
     """Burst of 5 frames for same user → all consumed, no drops."""
     stop = asyncio.Event()
     transport = _StoppingTransport(stop, max_packets=10)
-    sink = PhoneAudioSink()
+    sink = _make_sink_with_frames(5)
     stats = BridgeStats()
-
-    user = MagicMock()
-    user.id = 1
-    for _ in range(5):
-        data = MagicMock()
-        data.pcm = np.full(1920, 1000, dtype=np.int16).tobytes()
-        sink.write(user, data)
 
     with patch("asyncio.sleep", new=_noop_sleep):
         await rtp_send_loop(sink, transport, _ADDR, stop_event=stop, stats=stats)

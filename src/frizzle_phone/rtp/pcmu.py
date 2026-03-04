@@ -2,7 +2,7 @@
 
 import numpy as np
 
-SAMPLE_RATE = 8000
+SAMPLE_RATE = 8000  # ITU-T G.711 §1 / RFC 3551 §4.5.14 (PCMU clock rate)
 ULAW_BIAS = 0x84
 ULAW_CLIP = 32635
 

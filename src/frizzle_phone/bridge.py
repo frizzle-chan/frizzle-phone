@@ -20,6 +20,7 @@ import soxr
 from discord.ext import voice_recv
 
 from frizzle_phone.bridge_stats import BridgeStats
+from frizzle_phone.rtp import pcmu
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw
 from frizzle_phone.rtp.stream import PTIME_MS, SAMPLES_PER_PACKET, build_rtp_packet
 
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 SILENCE_FRAME = b"\x00" * 3840  # 20ms of 48kHz stereo s16le silence
 ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
 MAX_SLOT_QUEUE = 50  # 1s max buffer, bounds latency
+DISCORD_SAMPLE_RATE = 48000  # discord.py Encoder.SAMPLING_RATE (Opus mandates 48kHz)
+DISCORD_FRAME_SAMPLES = DISCORD_SAMPLE_RATE * PTIME_MS // 1000  # 960
 
 
 def stereo_to_mono(data: bytes) -> np.ndarray:
@@ -156,7 +159,12 @@ class ChunkedResampler:
 
 
 def _new_resampler() -> ChunkedResampler:
-    return ChunkedResampler(48000, 8000, SAMPLES_PER_PACKET, quality=soxr.LQ)
+    # LQ: sinc FIR with ~96dB stopband — needed to prevent aliasing on
+    # 6:1 decimation.  QQ has no anti-alias filter; HQ adds too much
+    # group delay (~140ms) for interactive voice.  See DESIGN.md#resampling.
+    return ChunkedResampler(
+        DISCORD_SAMPLE_RATE, pcmu.SAMPLE_RATE, SAMPLES_PER_PACKET, quality=soxr.LQ
+    )
 
 
 async def rtp_send_loop(

@@ -8,8 +8,13 @@ import queue
 import numpy as np
 import soxr
 
-from frizzle_phone.bridge import ChunkedResampler
+from frizzle_phone.bridge import (
+    DISCORD_FRAME_SAMPLES,
+    DISCORD_SAMPLE_RATE,
+    ChunkedResampler,
+)
 from frizzle_phone.bridge_stats import BridgeStats
+from frizzle_phone.rtp import pcmu
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 
 logger = logging.getLogger(__name__)
@@ -32,8 +37,12 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         self._queue = phone_to_discord_queue
         self._transport: asyncio.DatagramTransport | None = None
         self._stats = stats
-        # 960 samples = 20ms at 48kHz (one Discord frame)
-        self._resampler = ChunkedResampler(8000, 48000, 960, quality=soxr.LQ)
+        self._resampler = ChunkedResampler(
+            pcmu.SAMPLE_RATE,
+            DISCORD_SAMPLE_RATE,
+            DISCORD_FRAME_SAMPLES,
+            quality=soxr.LQ,
+        )
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self._transport = transport  # type: ignore[assignment]
