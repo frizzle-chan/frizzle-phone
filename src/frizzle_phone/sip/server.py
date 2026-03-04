@@ -879,6 +879,19 @@ class SipServer(asyncio.DatagramProtocol):
         self._send(bye_msg, remote_addr)
         logger.info("Sent BYE for call %s", call_id)
 
+    def get_bridged_calls(self) -> list[tuple[int, int]]:
+        """Return (guild_id, channel_id) for all bridged calls."""
+        result: list[tuple[int, int]] = []
+        for call in self._calls.values():
+            ctx = call.discord_bridge
+            if ctx is not None:
+                result.append((ctx.guild_id, ctx.channel_id))
+                continue
+            pb = call.pending_bridge
+            if pb is not None:
+                result.append((pb.guild_id, pb.channel_id))
+        return result
+
     def hangup_by_voice_channel(self, guild_id: int, channel_id: int) -> None:
         """Hang up the SIP call bridged to a Discord voice channel."""
         for call in list(self._calls.values()):

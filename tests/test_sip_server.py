@@ -8,7 +8,12 @@ import pytest
 
 from frizzle_phone.bridge_manager import BridgeHandle
 from frizzle_phone.sip.message import parse_message
-from frizzle_phone.sip.server import Call, DiscordBridgeContext, SipServer
+from frizzle_phone.sip.server import (
+    Call,
+    DiscordBridgeContext,
+    PendingBridge,
+    SipServer,
+)
 from frizzle_phone.sip.transaction import TxnState
 
 from .conftest import FakeTransport
@@ -187,3 +192,50 @@ async def test_voice_disconnect_sends_bye(db):
     assert call.terminated
     bye_messages = [d.decode() for d, _a in transport.sent if b"BYE" in d]
     assert len(bye_messages) == 1
+
+
+def _make_call(call_id: str = "test@10.0.0.1") -> Call:
+    return Call(
+        call_id=call_id,
+        from_tag="abc",
+        to_tag="xyz",
+        remote_addr=ADDR,
+        remote_contact=f"sip:phone@{ADDR[0]}:{ADDR[1]}",
+        remote_from="<sip:phone@10.0.0.1>",
+        remote_rtp_addr=("10.0.0.1", 20000),
+    )
+
+
+def test_get_bridged_calls_active_bridges(db):
+    """get_bridged_calls returns (guild_id, channel_id) for active bridges."""
+    server, _transport = _make_server(db)
+    call = _make_call()
+    call.discord_bridge = DiscordBridgeContext(
+        voice_client=MagicMock(),
+        guild_id=1,
+        channel_id=2,
+        handle=MagicMock(),
+    )
+    server._calls[call.call_id] = call
+
+    assert server.get_bridged_calls() == [(1, 2)]
+
+
+def test_get_bridged_calls_pending_bridges(db):
+    """get_bridged_calls includes pending bridges."""
+    server, _transport = _make_server(db)
+    call = _make_call()
+    call.pending_bridge = PendingBridge(
+        voice_client=MagicMock(),
+        guild_id=3,
+        channel_id=4,
+    )
+    server._calls[call.call_id] = call
+
+    assert server.get_bridged_calls() == [(3, 4)]
+
+
+def test_get_bridged_calls_empty(db):
+    """get_bridged_calls returns empty list when no bridges exist."""
+    server, _transport = _make_server(db)
+    assert server.get_bridged_calls() == []

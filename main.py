@@ -11,9 +11,10 @@ from pathlib import Path
 import aiosqlite
 from dotenv import load_dotenv
 
-from frizzle_phone.bot import create_bot, set_hangup_handler
+from frizzle_phone.bot import create_bot
 from frizzle_phone.database import cleanup_stale_calls, run_migrations
 from frizzle_phone.discord_patches import apply_discord_patches
+from frizzle_phone.phone_cog import PhoneCog
 from frizzle_phone.rtp.pcmu import pcm_to_ulaw
 from frizzle_phone.rtp.stream import SAMPLES_PER_PACKET
 from frizzle_phone.sip.server import get_server_ip, start_server
@@ -86,8 +87,8 @@ async def main() -> None:
         audio_buffers=audio_buffers,
         bot=bot,
     )
-    # Register hangup handler so bot voice-disconnect events send BYE
-    set_hangup_handler(server)
+    # Register PhoneCog for voice-disconnect events and reconciliation
+    await bot.add_cog(PhoneCog(bot, hangup_handler=server, call_state=server))
 
     # Start webapp
     app = create_app(db, bot, list(audio_buffers.keys()))
