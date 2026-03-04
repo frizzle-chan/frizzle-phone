@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import asyncpg
+import aiosqlite
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -43,9 +43,9 @@ def _make_bot(guilds: list[dict] | None = None) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_get_renders_form(pool: asyncpg.Pool):
+async def test_get_renders_form(db: aiosqlite.Connection):
     bot = _make_bot()
-    app = create_app(pool, bot, ["techno", "beeps"])
+    app = create_app(db, bot, ["techno", "beeps"])
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/")
         assert resp.status == 200
@@ -58,9 +58,9 @@ async def test_get_renders_form(pool: asyncpg.Pool):
 
 
 @pytest.mark.asyncio
-async def test_post_saves_extensions(pool: asyncpg.Pool):
+async def test_post_saves_extensions(db: aiosqlite.Connection):
     bot = _make_bot()
-    app = create_app(pool, bot, ["techno", "beeps"])
+    app = create_app(db, bot, ["techno", "beeps"])
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/extensions",
@@ -73,24 +73,26 @@ async def test_post_saves_extensions(pool: asyncpg.Pool):
         assert resp.status == 303
 
         # Verify data in DB
-        discord_row = await pool.fetchrow(
+        cursor = await db.execute(
             "SELECT * FROM discord_extensions WHERE extension = '100'"
         )
+        discord_row = await cursor.fetchone()
         assert discord_row is not None
         assert discord_row["guild_id"] == 111
         assert discord_row["channel_id"] == 1001
 
-        audio_row = await pool.fetchrow(
+        cursor = await db.execute(
             "SELECT * FROM audio_extensions WHERE extension = '200'"
         )
+        audio_row = await cursor.fetchone()
         assert audio_row is not None
         assert audio_row["audio_name"] == "techno"
 
 
 @pytest.mark.asyncio
-async def test_post_duplicate_extension_returns_400(pool: asyncpg.Pool):
+async def test_post_duplicate_extension_returns_400(db: aiosqlite.Connection):
     bot = _make_bot()
-    app = create_app(pool, bot, ["techno"])
+    app = create_app(db, bot, ["techno"])
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/extensions",
@@ -104,13 +106,14 @@ async def test_post_duplicate_extension_returns_400(pool: asyncpg.Pool):
 
 
 @pytest.mark.asyncio
-async def test_post_clears_extensions(pool: asyncpg.Pool):
+async def test_post_clears_extensions(db: aiosqlite.Connection):
     # Seed some data first
-    await pool.execute(
+    await db.execute(
         "INSERT INTO audio_extensions (extension, audio_name) VALUES ('old', 'techno')"
     )
+    await db.commit()
     bot = _make_bot()
-    app = create_app(pool, bot, ["techno"])
+    app = create_app(db, bot, ["techno"])
     async with TestClient(TestServer(app)) as client:
         # Post with empty values — clears all extensions
         resp = await client.post(
@@ -120,18 +123,21 @@ async def test_post_clears_extensions(pool: asyncpg.Pool):
         )
         assert resp.status == 303
 
-        count = await pool.fetchval("SELECT count(*) FROM audio_extensions")
-        assert count == 0
+        cursor = await db.execute("SELECT count(*) FROM audio_extensions")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 0
 
 
 @pytest.mark.asyncio
-async def test_get_shows_existing_extensions(pool: asyncpg.Pool):
-    await pool.execute(
+async def test_get_shows_existing_extensions(db: aiosqlite.Connection):
+    await db.execute(
         "INSERT INTO discord_extensions (extension, guild_id, channel_id)"
         " VALUES ('500', 111, 1001)"
     )
+    await db.commit()
     bot = _make_bot()
-    app = create_app(pool, bot, ["techno"])
+    app = create_app(db, bot, ["techno"])
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/")
         text = await resp.text()

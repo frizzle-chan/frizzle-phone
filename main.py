@@ -1,17 +1,20 @@
 """Frizzle-phone SIP server entrypoint."""
 
+import argparse
 import asyncio
 import logging
 import os
 import signal
+import sqlite3
 from pathlib import Path
 
-import asyncpg
+import aiosqlite
 from dotenv import load_dotenv
 
-from frizzle_phone.bot import create_bot, set_hangup_handler
-from frizzle_phone.database import run_migrations
+from frizzle_phone.bot import create_bot
+from frizzle_phone.database import cleanup_stale_calls, run_migrations
 from frizzle_phone.discord_patches import apply_discord_patches
+from frizzle_phone.phone_cog import PhoneCog
 from frizzle_phone.rtp.pcmu import pcm_to_ulaw
 from frizzle_phone.rtp.stream import SAMPLES_PER_PACKET
 from frizzle_phone.sip.server import get_server_ip, start_server
@@ -29,20 +32,24 @@ async def main() -> None:
     load_dotenv()
     apply_discord_patches()
     discord_token = os.environ.get("DISCORD_TOKEN", "")
-    database_url = os.environ.get(
-        "DATABASE_URL",
-        "postgresql://frizzle_phone:frizzle_phone@localhost:15432/frizzle_phone",
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--db", default=os.environ.get("DATABASE_PATH", "frizzle-phone.db")
     )
+    args = parser.parse_args()
 
     loop = asyncio.get_running_loop()
     server_ip = get_server_ip()
     silence_prefix = b"\xff" * (SAMPLES_PER_PACKET * 4)
 
-    # Create DB pool and run migrations
-    pool = await asyncpg.create_pool(database_url)
-    if pool is None:
-        raise RuntimeError("Failed to create database connection pool")
-    await run_migrations(pool)
+    # Create DB connection and run migrations
+    db = await aiosqlite.connect(args.db)
+    db.row_factory = sqlite3.Row
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA foreign_keys=ON")
+    await run_migrations(db)
+    await cleanup_stale_calls(db)
 
     # Create Discord bot
     bot = create_bot()
@@ -68,21 +75,24 @@ async def main() -> None:
     else:
         bot_task = None
 
+    sip_port = int(os.environ.get("SIP_PORT", "5060"))
+    web_port = int(os.environ.get("WEB_PORT", "8080"))
+
     # Start SIP server
     transport, server = await start_server(
         "0.0.0.0",
-        5060,
+        sip_port,
         server_ip=server_ip,
-        pool=pool,
+        db=db,
         audio_buffers=audio_buffers,
         bot=bot,
     )
-    # Register hangup handler so bot voice-disconnect events send BYE
-    set_hangup_handler(server)
+    # Register PhoneCog for voice-disconnect events and reconciliation
+    await bot.add_cog(PhoneCog(bot, hangup_handler=server, call_state=server))
 
     # Start webapp
-    app = create_app(pool, bot, list(audio_buffers.keys()))
-    runner = await start_webapp(app, "0.0.0.0", 8080)
+    app = create_app(db, bot, list(audio_buffers.keys()))
+    runner = await start_webapp(app, "0.0.0.0", web_port)
 
     shutdown = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -98,7 +108,7 @@ async def main() -> None:
             await bot.close()
         if bot_task is not None:
             bot_task.cancel()
-        await pool.close()
+        await db.close()
 
 
 if __name__ == "__main__":

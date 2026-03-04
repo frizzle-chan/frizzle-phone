@@ -3,12 +3,17 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
+import aiosqlite
 import pytest
 
 from frizzle_phone.bridge_manager import BridgeHandle
 from frizzle_phone.sip.message import parse_message
-from frizzle_phone.sip.server import Call, DiscordBridgeContext, SipServer
+from frizzle_phone.sip.server import (
+    Call,
+    DiscordBridgeContext,
+    PendingBridge,
+    SipServer,
+)
 from frizzle_phone.sip.transaction import TxnState
 
 from .conftest import FakeTransport
@@ -50,10 +55,10 @@ def _make_invite(*, require: str | None = None, branch: str = "z9hG4bK001") -> b
     return _make_request("INVITE", branch=branch, require=require)
 
 
-def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
+def _make_server(db: aiosqlite.Connection) -> tuple[SipServer, FakeTransport]:
     server = SipServer(
         server_ip="10.0.0.2",
-        pool=pool,
+        db=db,
         audio_buffers={"techno": b"\xff" * 160},
         bot=MagicMock(),
     )
@@ -65,9 +70,9 @@ def _make_server(pool: asyncpg.Pool) -> tuple[SipServer, FakeTransport]:
 ADDR = ("10.0.0.1", 5060)
 
 
-def test_require_header_returns_420(pool):
+def test_require_header_returns_420(db):
     """Require header with unsupported option triggers 420 Bad Extension."""
-    server, transport = _make_server(pool)
+    server, transport = _make_server(db)
     server.datagram_received(_make_invite(require="100rel"), ADDR)
     # Should get a single 420 response (no 100 Trying, no 200 OK)
     assert len(transport.sent) == 1
@@ -78,9 +83,9 @@ def test_require_header_returns_420(pool):
 
 
 @pytest.mark.asyncio
-async def test_no_require_header_proceeds_normally(seeded_pool):
+async def test_no_require_header_proceeds_normally(seeded_db):
     """Without Require header, INVITE is processed normally."""
-    server, transport = _make_server(seeded_pool)
+    server, transport = _make_server(seeded_db)
     server.datagram_received(_make_invite(), ADDR)
     await _drain()
     # Should get 100 Trying + 200 OK
@@ -94,9 +99,9 @@ async def test_no_require_header_proceeds_normally(seeded_pool):
 
 
 @pytest.mark.asyncio
-async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_pool):
+async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_db):
     """CANCEL while INVITE txn is in PROCEEDING sends 200 + 487 and terminates."""
-    server, transport = _make_server(seeded_pool)
+    server, transport = _make_server(seeded_db)
     call_id = "cancel-proceeding@test"
 
     # Send INVITE — creates call and txn (100 Trying + 200 OK)
@@ -133,9 +138,9 @@ async def test_cancel_in_proceeding_sends_487_before_terminate(seeded_pool):
 
 
 @pytest.mark.asyncio
-async def test_unknown_extension_returns_404(pool):
+async def test_unknown_extension_returns_404(db):
     """INVITE for an unregistered extension returns 404 Not Found."""
-    server, transport = _make_server(pool)
+    server, transport = _make_server(db)
     server.datagram_received(_make_request("INVITE", uri="sip:999@10.0.0.2"), ADDR)
     await _drain()
     assert len(transport.sent) == 1
@@ -145,9 +150,9 @@ async def test_unknown_extension_returns_404(pool):
 
 
 @pytest.mark.asyncio
-async def test_voice_disconnect_sends_bye(pool):
+async def test_voice_disconnect_sends_bye(db):
     """Voice client disconnection triggers BYE to phone."""
-    server, transport = _make_server(pool)
+    server, transport = _make_server(db)
 
     # Build a Call with an active discord bridge
     vc = MagicMock()
@@ -187,3 +192,50 @@ async def test_voice_disconnect_sends_bye(pool):
     assert call.terminated
     bye_messages = [d.decode() for d, _a in transport.sent if b"BYE" in d]
     assert len(bye_messages) == 1
+
+
+def _make_call(call_id: str = "test@10.0.0.1") -> Call:
+    return Call(
+        call_id=call_id,
+        from_tag="abc",
+        to_tag="xyz",
+        remote_addr=ADDR,
+        remote_contact=f"sip:phone@{ADDR[0]}:{ADDR[1]}",
+        remote_from="<sip:phone@10.0.0.1>",
+        remote_rtp_addr=("10.0.0.1", 20000),
+    )
+
+
+def test_get_bridged_calls_active_bridges(db):
+    """get_bridged_calls returns (guild_id, channel_id) for active bridges."""
+    server, _transport = _make_server(db)
+    call = _make_call()
+    call.discord_bridge = DiscordBridgeContext(
+        voice_client=MagicMock(),
+        guild_id=1,
+        channel_id=2,
+        handle=MagicMock(),
+    )
+    server._calls[call.call_id] = call
+
+    assert server.get_bridged_calls() == [(1, 2)]
+
+
+def test_get_bridged_calls_pending_bridges(db):
+    """get_bridged_calls includes pending bridges."""
+    server, _transport = _make_server(db)
+    call = _make_call()
+    call.pending_bridge = PendingBridge(
+        voice_client=MagicMock(),
+        guild_id=3,
+        channel_id=4,
+    )
+    server._calls[call.call_id] = call
+
+    assert server.get_bridged_calls() == [(3, 4)]
+
+
+def test_get_bridged_calls_empty(db):
+    """get_bridged_calls returns empty list when no bridges exist."""
+    server, _transport = _make_server(db)
+    assert server.get_bridged_calls() == []

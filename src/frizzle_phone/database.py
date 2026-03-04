@@ -6,7 +6,7 @@ import logging
 import re
 from pathlib import Path
 
-import asyncpg
+import aiosqlite
 
 logger = logging.getLogger(__name__)
 
@@ -14,14 +14,15 @@ _MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 _FILENAME_RE = re.compile(r"^(\d+)_.*\.sql$")
 
 
-async def _ensure_migrations_table(conn: asyncpg.Connection) -> None:
-    await conn.execute("""
+async def _ensure_migrations_table(db: aiosqlite.Connection) -> None:
+    await db.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version     INTEGER PRIMARY KEY,
-            applied_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            applied_at  TEXT NOT NULL DEFAULT (datetime('now')),
             filename    TEXT NOT NULL
         )
     """)
+    await db.commit()
 
 
 def _discover_migrations() -> list[tuple[int, Path]]:
@@ -35,16 +36,16 @@ def _discover_migrations() -> list[tuple[int, Path]]:
     return results
 
 
-async def _get_applied_versions(conn: asyncpg.Connection) -> set[int]:
-    rows = await conn.fetch("SELECT version FROM schema_migrations")
-    return {r["version"] for r in rows}
+async def _get_applied_versions(db: aiosqlite.Connection) -> set[int]:
+    cursor = await db.execute("SELECT version FROM schema_migrations")
+    rows = await cursor.fetchall()
+    return {r[0] for r in rows}
 
 
-async def run_migrations(pool: asyncpg.Pool) -> int:
+async def run_migrations(db: aiosqlite.Connection) -> int:
     """Apply pending migrations and return the number applied."""
-    async with pool.acquire() as conn:
-        await _ensure_migrations_table(conn)
-        applied = await _get_applied_versions(conn)
+    await _ensure_migrations_table(db)
+    applied = await _get_applied_versions(db)
 
     migrations = _discover_migrations()
     count = 0
@@ -57,13 +58,16 @@ async def run_migrations(pool: asyncpg.Pool) -> int:
             for line in sql.splitlines()
         ):
             continue
-        async with pool.acquire() as conn, conn.transaction():
-            await conn.execute(sql)
-            await conn.execute(
-                "INSERT INTO schema_migrations (version, filename) VALUES ($1, $2)",
-                version,
-                path.name,
-            )
+        await db.execute("BEGIN")
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                await db.execute(stmt)
+        await db.execute(
+            "INSERT INTO schema_migrations (version, filename) VALUES (?, ?)",
+            (version, path.name),
+        )
+        await db.commit()
         logger.info("Applied migration %s", path.name)
         count += 1
 
@@ -71,4 +75,17 @@ async def run_migrations(pool: asyncpg.Pool) -> int:
         logger.info("Applied %d migration(s)", count)
     else:
         logger.info("No pending migrations")
+    return count
+
+
+async def cleanup_stale_calls(db: aiosqlite.Connection) -> int:
+    """Mark any ringing/active calls as failed (stale from prior crash)."""
+    cursor = await db.execute(
+        "UPDATE calls SET status = 'failed', ended_at = datetime('now')"
+        " WHERE status IN ('ringing', 'active')"
+    )
+    count = cursor.rowcount
+    if count:
+        await db.commit()
+        logger.warning("Cleaned up %d stale call(s) from previous run", count)
     return count

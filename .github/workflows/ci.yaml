@@ -11,20 +11,6 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: docker.io/library/postgres:18.1
-        env:
-          POSTGRES_USER: frizzle_phone
-          POSTGRES_PASSWORD: frizzle_phone
-          POSTGRES_DB: frizzle_phone
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U frizzle_phone -d frizzle_phone"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup
@@ -42,19 +28,9 @@ jobs:
         run: uv run vulture
 
       - name: Run tests
-        env:
-          DATABASE_URL: postgresql://frizzle_phone:frizzle_phone@localhost:5432/frizzle_phone
         run: uv run pytest
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Run squawk check
-        run: |
-          shopt -s nullglob
-          files=(migrations/*.sql)
-          if [ ${#files[@]} -gt 0 ]; then
-            uv run squawk "${files[@]}"
-          fi

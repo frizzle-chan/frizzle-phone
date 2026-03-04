@@ -66,8 +66,6 @@ RUN apt-get update \
        git \
        jq \
        just \
-       libpq5 \
-       postgresql-client \
        procps \
        ripgrep \
        tmux \
