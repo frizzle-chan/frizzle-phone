@@ -78,16 +78,16 @@ The d2p (Discord-to-Phone) path is the trickiest part of the bridge. Discord del
 
 ```mermaid
 graph LR
-    subgraph "Callback thread (bursty)"
+    subgraph CB["Callback thread (bursty)"]
         direction TB
         OPUS[Discord Opus] -->|decrypt + decode| PCM[PCM frames]
         PCM -->|"stereo→mono"| WRITE["write()"]
     end
 
-    WRITE -->|append under lock| BUF[("Lock-protected<br/>buffer")]
-    BUF -->|atomic swap| DRAIN
+    CB -->|append under lock| BUF[("Lock-protected<br/>buffer")]
+    BUF -->|atomic swap| AL
 
-    subgraph "Asyncio event loop (every 20ms)"
+    subgraph AL["Asyncio event loop (every 20ms)"]
         direction TB
         DRAIN["drain()"] -->|group by user| SLOTS[Slot queue]
         SLOTS -->|pop 1 slot| MIX{"Mix if multiple<br/>speakers"}
