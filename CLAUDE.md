@@ -71,6 +71,19 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 - GitHub Actions pins dependencies by SHA with version comments
 - SIP code (`src/frizzle_phone/sip/`) is annotated with RFC section references — when modifying SIP logic, cite the relevant RFC section (e.g. `# RFC 3261 §17.2.1: ...`). Use the `/rfc-sip-lookup` skill to find the correct sections.
 
+### PR Labels
+When creating PRs with `gh pr create`, apply appropriate labels with `--label`:
+- `breaking-change` — requires end-user action beyond updating the app version (e.g. config changes, manual migration, env var renames, Python version upgrades)
+- `bug` — bug fixes
+- `enhancement` — new features or improvements
+- `documentation` — docs-only changes
+- `ci` — CI/CD, Docker, devcontainer changes
+- `sip` — SIP/RTP/SDP protocol changes
+- `audio` — audio bridge, synthesis changes
+- `database` — migrations, database.py changes
+
+The `actions/labeler` workflow also auto-labels based on file paths and branch names, but explicit labels on PR creation are preferred for accuracy (especially `bug` vs `enhancement`).
+
 ## Database
 
 - SQLite DB path: configurable via `DATABASE_PATH` env var (default: `frizzle-phone.db` in working dir)

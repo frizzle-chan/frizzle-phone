@@ -1,0 +1,28 @@
+breaking-change:
+  - head-branch: ['^breaking/', '^break/']
+
+bug:
+  - head-branch: ['^fix/', '^bugfix/', '^hotfix/']
+
+enhancement:
+  - head-branch: ['^feat/', '^feature/', '^add/']
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file: ['*.md', 'docs/**']
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: ['.github/**', 'Dockerfile', 'justfile', '.devcontainer/**']
+
+sip:
+  - changed-files:
+    - any-glob-to-any-file: ['src/frizzle_phone/sip/**', 'src/frizzle_phone/rtp/**', 'src/frizzle_phone/sdp/**']
+
+audio:
+  - changed-files:
+    - any-glob-to-any-file: ['src/frizzle_phone/bridge*.py', 'src/frizzle_phone/synth.py']
+
+database:
+  - changed-files:
+    - any-glob-to-any-file: ['src/frizzle_phone/migrations/**', 'src/frizzle_phone/database.py']

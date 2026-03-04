@@ -1,0 +1,14 @@
+changelog:
+  categories:
+    - title: "⚠️ Breaking Changes"
+      labels: ["breaking-change"]
+    - title: "🐛 Bug Fixes"
+      labels: ["bug"]
+    - title: "🚀 Enhancements"
+      labels: ["enhancement"]
+    - title: "📖 Documentation"
+      labels: ["documentation"]
+    - title: "🔧 Infrastructure"
+      labels: ["ci"]
+    - title: "Other Changes"
+      labels: ["*"]
