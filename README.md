@@ -6,7 +6,7 @@ frizzle-phone allows you to use your favorite SIP VoIP phone to call into your f
 
 For instance you can make it so dialing extension 100 will call your home server's vc and maybe extension 200 calls into your friend's server.
 
-frizzle-phone is completely self contained, you just run the server and point your SIP phone at it.
+frizzle-phone is completely self-contained, you just run the server and point your SIP phone at it.
 No other infrastructure is needed.
 
 ## Features
