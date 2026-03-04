@@ -42,18 +42,6 @@ async def _noop_sleep(_dur: float) -> None:
     pass
 
 
-def _make_sink_with_frame() -> PhoneAudioSink:
-    """Create a sink with one non-silence stereo frame written."""
-    sink = PhoneAudioSink()
-    user = MagicMock()
-    user.id = 1
-    data = MagicMock()
-    # 960 stereo samples @ 48kHz, non-zero audio
-    data.pcm = np.full(1920, 1000, dtype=np.int16).tobytes()
-    sink.write(user, data)
-    return sink
-
-
 @pytest.mark.asyncio
 @patch("frizzle_phone.bridge.random.randint", side_effect=[_SSRC, 0, 0])
 async def test_sends_silence_on_empty_sink(_mock_rand):
@@ -71,19 +59,32 @@ async def test_sends_silence_on_empty_sink(_mock_rand):
     assert pkt[12:] == ULAW_SILENCE_PAYLOAD
 
 
+def _make_sink_with_frames(n: int = 5) -> PhoneAudioSink:
+    """Create a sink with *n* non-silence stereo frames (primes the sinc resampler)."""
+    sink = PhoneAudioSink()
+    user = MagicMock()
+    user.id = 1
+    for _ in range(n):
+        data = MagicMock()
+        data.pcm = np.full(1920, 1000, dtype=np.int16).tobytes()
+        sink.write(user, data)
+    return sink
+
+
 @pytest.mark.asyncio
 @patch("frizzle_phone.bridge.random.randint", side_effect=[_SSRC, 0, 0])
 async def test_sends_non_silence_with_frame(_mock_rand):
-    """Sink with a frame → non-silence payload in RTP packet."""
+    """Sink with frames → at least one non-silence payload after resampler primes."""
     stop = asyncio.Event()
-    transport = _StoppingTransport(stop, max_packets=1)
-    sink = _make_sink_with_frame()
+    # Enough ticks for the sinc resampler to produce output
+    transport = _StoppingTransport(stop, max_packets=10)
+    sink = _make_sink_with_frames()
 
     with patch("asyncio.sleep", new=_noop_sleep):
         await rtp_send_loop(sink, transport, _ADDR, stop_event=stop)
 
-    pkt, _ = transport.sent[0]
-    assert pkt[12:] != ULAW_SILENCE_PAYLOAD
+    non_silence = [p for p, _ in transport.sent if p[12:] != ULAW_SILENCE_PAYLOAD]
+    assert non_silence, "Expected at least one non-silence RTP packet"
 
 
 @pytest.mark.asyncio
@@ -147,29 +148,30 @@ async def test_marker_bit_first_packet_only(_mock_rand):
 async def test_records_stats(_mock_rand):
     """Stats counters are updated correctly."""
     stop = asyncio.Event()
-    transport = _StoppingTransport(stop, max_packets=2)
-    sink = _make_sink_with_frame()
+    transport = _StoppingTransport(stop, max_packets=10)
+    sink = _make_sink_with_frames()
     stats = BridgeStats()
 
     with patch("asyncio.sleep", new=_noop_sleep):
         await rtp_send_loop(sink, transport, _ADDR, stop_event=stop, stats=stats)
 
-    assert stats.rtp_frames_sent == 2
-    assert stats.rtp_silence_sent == 1
+    assert stats.rtp_frames_sent == 10
+    assert stats.rtp_silence_sent >= 1  # initial silence while resampler primes
+    assert stats.d2p_frames_mixed >= 1
 
 
 @pytest.mark.asyncio
 @patch("frizzle_phone.bridge.random.randint", side_effect=[_SSRC, 0, 0])
 async def test_burst_frames_all_consumed(_mock_rand):
-    """Burst of 3 frames for same user → queued and consumed over 3 ticks, no drops."""
+    """Burst of 5 frames for same user → all consumed, no drops."""
     stop = asyncio.Event()
-    transport = _StoppingTransport(stop, max_packets=4)
+    transport = _StoppingTransport(stop, max_packets=10)
     sink = PhoneAudioSink()
     stats = BridgeStats()
 
     user = MagicMock()
     user.id = 1
-    for _ in range(3):
+    for _ in range(5):
         data = MagicMock()
         data.pcm = np.full(1920, 1000, dtype=np.int16).tobytes()
         sink.write(user, data)
@@ -177,9 +179,8 @@ async def test_burst_frames_all_consumed(_mock_rand):
     with patch("asyncio.sleep", new=_noop_sleep):
         await rtp_send_loop(sink, transport, _ADDR, stop_event=stop, stats=stats)
 
-    assert stats.d2p_frames_mixed == 3
+    assert stats.d2p_frames_mixed == 5
     assert stats.d2p_frames_dropped == 0
-    assert stats.rtp_silence_sent == 1
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import queue
 import numpy as np
 import soxr
 
+from frizzle_phone.bridge import ChunkedResampler
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 
@@ -31,9 +32,8 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
         self._queue = phone_to_discord_queue
         self._transport: asyncio.DatagramTransport | None = None
         self._stats = stats
-        self._resampler = soxr.ResampleStream(
-            8000, 48000, 1, dtype="int16", quality=soxr.QQ
-        )
+        # 960 samples = 20ms at 48kHz (one Discord frame)
+        self._resampler = ChunkedResampler(8000, 48000, 960, quality=soxr.LQ)
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self._transport = transport  # type: ignore[assignment]
@@ -57,27 +57,26 @@ class RtpReceiveProtocol(asyncio.DatagramProtocol):
 
         # Decode PCMU → int16 PCM (8kHz mono)
         pcm_8k = ulaw_to_pcm(payload)
-        # Resample 8kHz → 48kHz
+        # Resample 8kHz → 48kHz, yielding fixed-size 960-sample chunks
         arr_8k = np.frombuffer(pcm_8k, dtype=np.int16)
-        arr_48k = self._resampler.resample_chunk(arr_8k)
-        # Mono → stereo
-        stereo = _mono_to_stereo(arr_48k)
+        for arr_48k in self._resampler.feed(arr_8k):
+            # Mono → stereo
+            stereo = _mono_to_stereo(arr_48k)
 
-        # Enqueue for Discord — drop oldest on overflow to preserve freshness
-        # for real-time playback.  (Contrast with d2p in bridge.py which drops
-        # newest as simple backpressure.)
-        try:
-            self._queue.put_nowait(stereo)
-        except queue.Full:
-            if self._stats:
-                self._stats.p2d_queue_overflow += 1
-                logger.warning(
-                    "bridge p2d queue full, dropping oldest (depth=%d)",
-                    self._queue.qsize(),
-                )
-            with contextlib.suppress(queue.Empty):
-                self._queue.get_nowait()
-            self._queue.put_nowait(stereo)
+            # Enqueue for Discord — drop oldest on overflow to preserve freshness
+            # for real-time playback.
+            try:
+                self._queue.put_nowait(stereo)
+            except queue.Full:
+                if self._stats:
+                    self._stats.p2d_queue_overflow += 1
+                    logger.warning(
+                        "bridge p2d queue full, dropping oldest (depth=%d)",
+                        self._queue.qsize(),
+                    )
+                with contextlib.suppress(queue.Empty):
+                    self._queue.get_nowait()
+                self._queue.put_nowait(stereo)
 
     def get_transport(self) -> asyncio.DatagramTransport | None:
         return self._transport

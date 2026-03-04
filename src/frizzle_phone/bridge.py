@@ -107,8 +107,56 @@ class PhoneAudioSink(voice_recv.AudioSink):
         self.drain()  # discard remaining frames
 
 
-def _new_resampler() -> soxr.ResampleStream:
-    return soxr.ResampleStream(48000, 8000, 1, dtype="int16", quality=soxr.QQ)
+class ChunkedResampler:
+    """Wraps soxr.ResampleStream to emit fixed-size output chunks.
+
+    Sinc-based soxr quality levels (LQ+) buffer internally and emit in
+    bursts rather than a steady 1:ratio output.  This wrapper accumulates
+    resampler output and yields exactly ``chunk_size`` samples at a time.
+    """
+
+    __slots__ = (
+        "_in_rate",
+        "_out_rate",
+        "_quality",
+        "_chunk_size",
+        "_resampler",
+        "_buf",
+    )
+
+    def __init__(
+        self, in_rate: int, out_rate: int, chunk_size: int, *, quality: int = soxr.LQ
+    ) -> None:
+        self._in_rate = in_rate
+        self._out_rate = out_rate
+        self._quality = quality
+        self._chunk_size = chunk_size
+        self._resampler = soxr.ResampleStream(
+            in_rate, out_rate, 1, dtype="int16", quality=quality
+        )
+        self._buf = np.empty(0, dtype=np.int16)
+
+    def feed(self, samples: np.ndarray) -> list[np.ndarray]:
+        """Feed input samples, return 0+ fixed-size output chunks."""
+        out = self._resampler.resample_chunk(samples)
+        if len(out) > 0:
+            self._buf = np.concatenate([self._buf, out]) if len(self._buf) else out
+        chunks: list[np.ndarray] = []
+        while len(self._buf) >= self._chunk_size:
+            chunks.append(self._buf[: self._chunk_size])
+            self._buf = self._buf[self._chunk_size :]
+        return chunks
+
+    def clear(self) -> None:
+        """Reset resampler state and discard buffered output."""
+        self._resampler = soxr.ResampleStream(
+            self._in_rate, self._out_rate, 1, dtype="int16", quality=self._quality
+        )
+        self._buf = np.empty(0, dtype=np.int16)
+
+
+def _new_resampler() -> ChunkedResampler:
+    return ChunkedResampler(48000, 8000, SAMPLES_PER_PACKET, quality=soxr.LQ)
 
 
 async def rtp_send_loop(
@@ -129,6 +177,7 @@ async def rtp_send_loop(
     resampler = _new_resampler()
     was_silent = True
     slot_queue: deque[dict[int, np.ndarray]] = deque()
+    payload_queue: deque[bytes] = deque()
 
     while not stop_event.is_set():
         # 1. Drain new frames into slots
@@ -152,17 +201,11 @@ async def rtp_send_loop(
         if stats:
             stats.d2p_queue_depth = max(stats.d2p_queue_depth, len(slot_queue))
 
-        # 2. Pop one slot or send silence
-        if not slot_queue:
-            payload = ULAW_SILENCE_PAYLOAD
-            is_silence = True
-            if not was_silent:
-                resampler = _new_resampler()
-            was_silent = True
-        else:
+        # 2. Feed slots to resampler until we have a payload or run out
+        fed_this_tick = False
+        while slot_queue and not payload_queue:
             slot = slot_queue.popleft()
-            is_silence = False
-            was_silent = False
+            fed_this_tick = True
 
             if stats:
                 stats.d2p_frames_mixed += 1
@@ -175,8 +218,27 @@ async def rtp_send_loop(
                     32767,
                 ).astype(np.int16)
 
-            arr_8k = resampler.resample_chunk(mixed)
-            payload = pcm16_arr_to_ulaw(arr_8k)
+            for chunk_8k in resampler.feed(mixed):
+                payload_queue.append(pcm16_arr_to_ulaw(chunk_8k))
+
+        if fed_this_tick:
+            was_silent = False
+
+        # 3. Send one payload or silence
+        if payload_queue:
+            payload = payload_queue.popleft()
+            is_silence = False
+        else:
+            payload = ULAW_SILENCE_PAYLOAD
+            is_silence = True
+            # Only reset the resampler on a true silence transition — no
+            # slots were consumed this tick.  During the sinc filter's
+            # priming period (fed_this_tick=True but no output yet), keep
+            # the filter state so it can finish building up history.
+            if not was_silent and not fed_this_tick:
+                resampler.clear()
+            if not fed_this_tick:
+                was_silent = True
 
         packet = build_rtp_packet(seq, timestamp, ssrc, payload, marker=first)
         transport.sendto(packet, remote_addr)
