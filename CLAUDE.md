@@ -95,9 +95,8 @@ The `actions/labeler` workflow also auto-labels based on file paths and branch n
 
 | Symptom in logs | Likely cause |
 |---|---|
-| `d2p_queue_overflow > 0` | RTP send loop falling behind |
+| `d2p_dropped > 0` | RTP send loop falling behind |
 | `rtp_silence_sent` high | Discord not delivering audio frames |
-| `d2p_stale_flush` high | Intermittent Discord voice with >60ms gaps |
 | `rtp_max_sleep_overshoot > 5ms` | Event loop congestion |
 | `p2d_queue_overflow > 0` | Discord `read()` not keeping up |
 | `p2d_silence_reads` high, `p2d_frames_in` normal | Phone audio arriving in bursts (jitter) |

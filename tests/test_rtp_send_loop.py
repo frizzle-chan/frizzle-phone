@@ -7,7 +7,6 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from frizzle_phone.audio_utils import stereo_to_mono
 from frizzle_phone.bridge import ULAW_SILENCE_PAYLOAD, rtp_send_loop
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.stream import SAMPLES_PER_PACKET
@@ -45,7 +44,7 @@ def _empty_popper() -> dict[int, np.ndarray]:
 
 def _make_frame_popper(n: int = 5):
     """Create a popper that yields *n* non-silence mono frames then empties."""
-    mono = stereo_to_mono(np.full(1920, 1000, dtype=np.int16).tobytes())
+    mono = np.full(960, 1000, dtype=np.int16)
     frames = [{1: mono} for _ in range(n)]
     idx = [0]
 

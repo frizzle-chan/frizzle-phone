@@ -27,14 +27,9 @@ class BridgeStats:
 
     def reset(self) -> None:
         # Discord → Phone
-        self.d2p_frames_in: int = 0
         self.d2p_frames_mixed: int = 0
         self.d2p_frames_dropped: int = 0
-        self.d2p_stale_flush: int = 0
         self.d2p_queue_depth: int = 0
-        self.d2p_max_write_gap: float = 0.0
-        self._d2p_last_write: float = 0.0
-        self._d2p_gap_warnings: int = 0
 
         # Phone → Discord
         self.p2d_frames_in: int = 0
@@ -59,13 +54,9 @@ class BridgeStats:
         # Snapshot all counters atomically (under GIL, the reads happen
         # back-to-back before any interleaving writer can see reset values)
         snap = {
-            "d2p_in": self.d2p_frames_in,
             "d2p_mixed": self.d2p_frames_mixed,
             "d2p_dropped": self.d2p_frames_dropped,
-            "d2p_stale": self.d2p_stale_flush,
             "d2p_qdepth": self.d2p_queue_depth,
-            "d2p_max_gap": self.d2p_max_write_gap,
-            "d2p_gap_warns": self._d2p_gap_warnings,
             "p2d_in": self.p2d_frames_in,
             "p2d_overflow": self.p2d_queue_overflow,
             "p2d_reads": self.p2d_reads,
@@ -80,16 +71,13 @@ class BridgeStats:
         self.reset()
 
         logger.info(
-            "bridge stats | d2p in=%d mixed=%d dropped=%d stale=%d "
-            "qdepth=%d max_gap=%.1fms | p2d in=%d overflow=%d reads=%d "
+            "bridge stats | d2p mixed=%d dropped=%d "
+            "qdepth=%d | p2d in=%d overflow=%d reads=%d "
             "silence=%d max_gap=%.1fms | rtp sent=%d silence=%d "
             "overshoot=%.1fms",
-            snap["d2p_in"],
             snap["d2p_mixed"],
             snap["d2p_dropped"],
-            snap["d2p_stale"],
             snap["d2p_qdepth"],
-            snap["d2p_max_gap"] * 1000,
             snap["p2d_in"],
             snap["p2d_overflow"],
             snap["p2d_reads"],
@@ -121,10 +109,6 @@ class BridgeStats:
                 snap["rtp_silence"] / snap["rtp_sent"] * 100,
             )
 
-        if snap["d2p_gap_warns"] > 0:
-            logger.warning(
-                "bridge d2p write gaps >40ms: %d occurrences", snap["d2p_gap_warns"]
-            )
         if snap["p2d_gap_warns"] > 0:
             logger.warning(
                 "bridge p2d recv gaps >40ms: %d occurrences", snap["p2d_gap_warns"]
@@ -136,18 +120,6 @@ class BridgeStats:
         if now - self._last_summary >= _SUMMARY_INTERVAL_S:
             self.log_and_reset()
             self._last_summary = now
-
-    def record_d2p_write(self) -> None:
-        """Call from PhoneAudioSink.write() hot path."""
-        self.d2p_frames_in += 1
-        now = time.monotonic()
-        if self._d2p_last_write > 0:
-            gap = now - self._d2p_last_write
-            if gap > self.d2p_max_write_gap:
-                self.d2p_max_write_gap = gap
-            if gap > 0.040:
-                self._d2p_gap_warnings += 1
-        self._d2p_last_write = now
 
     def record_p2d_recv(self) -> None:
         """Call from RtpReceiveProtocol.datagram_received() hot path."""

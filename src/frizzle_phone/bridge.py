@@ -4,7 +4,7 @@
 #   d2p = Discord-to-Phone (audio from Discord voice → SIP/RTP to phone)
 #   p2d = Phone-to-Discord (audio from SIP/RTP phone → Discord voice)
 # Queue parameters use long form (phone_to_discord_queue), constants use
-# short form (P2D_QUEUE_SIZE), and stats fields use short form (d2p_frames_in).
+# short form (P2D_QUEUE_SIZE), and stats fields use short form (d2p_frames_mixed).
 
 import asyncio
 import logging

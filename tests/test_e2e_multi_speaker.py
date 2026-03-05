@@ -152,9 +152,6 @@ async def test_multi_speaker_chord_stagger(file_regression):
     assert stats.d2p_frames_dropped == 0, (
         f"Expected 0 dropped, got {stats.d2p_frames_dropped}"
     )
-    assert stats.d2p_stale_flush == 0, (
-        f"Expected 0 stale flushes, got {stats.d2p_stale_flush}"
-    )
     assert stats.rtp_frames_sent == TOTAL_TICKS, (
         f"Expected {TOTAL_TICKS} RTP sent, got {stats.rtp_frames_sent}"
     )
