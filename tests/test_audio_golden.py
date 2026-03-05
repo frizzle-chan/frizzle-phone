@@ -4,7 +4,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from frizzle_phone.bridge import PhoneAudioSink, _new_resampler
+from frizzle_phone.agc import AgcBank
+from frizzle_phone.bridge import PhoneAudioSink, _new_resampler, mix_slot
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw, ulaw_to_pcm
 from tests.audio_helpers import (
     FIXTURES,
@@ -16,6 +17,8 @@ from tests.audio_helpers import (
 
 def _run_sink(
     speaker_frames: dict[int, list[bytes]],
+    *,
+    agc_bank: AgcBank | None = None,
 ) -> bytes:
     """Feed speaker frames through PhoneAudioSink, return output WAV bytes.
 
@@ -58,14 +61,9 @@ def _run_sink(
             slots.append(current_slot)
 
         slot = slots[-1]
-        if len(slot) == 1:
-            mixed = next(iter(slot.values()))
-        else:
-            mixed = np.clip(
-                np.sum(list(slot.values()), axis=0, dtype=np.int32),
-                -32768,
-                32767,
-            ).astype(np.int16)
+        if agc_bank is not None:
+            slot = agc_bank.process_slot(slot)
+        mixed = mix_slot(slot)
 
         for chunk_8k in resampler.feed(mixed):
             ulaw_payloads.append(pcm16_arr_to_ulaw(chunk_8k))
@@ -73,6 +71,35 @@ def _run_sink(
     ulaw_bytes = b"".join(ulaw_payloads)
     pcm_8k = ulaw_to_pcm(ulaw_bytes)
     return pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)
+
+
+def _scale_frames(frames: list[bytes], target_dbfs: float) -> list[bytes]:
+    """Scale stereo frame bytes to a target dBFS level.
+
+    Computes a single gain from the global RMS across all frames so that
+    natural speech dynamics are preserved (no per-frame normalization).
+    """
+    # Measure global RMS across all frames (left channel = mono source)
+    all_mono = np.concatenate(
+        [
+            np.frombuffer(f, dtype=np.int16).reshape(-1, 2)[:, 0].astype(np.float64)
+            for f in frames
+        ]
+    )
+    rms = np.sqrt(np.mean(all_mono**2))
+    if rms < 1.0:
+        return list(frames)
+    current_dbfs = 20.0 * np.log10(rms / 32768.0)
+    gain = 10.0 ** ((target_dbfs - current_dbfs) / 20.0)
+
+    scaled = []
+    for frame_bytes in frames:
+        stereo = np.frombuffer(frame_bytes, dtype=np.int16)
+        stereo_scaled = np.clip(stereo.astype(np.float64) * gain, -32768, 32767).astype(
+            np.int16
+        )
+        scaled.append(stereo_scaled.tobytes())
+    return scaled
 
 
 def test_discord_to_phone_pipeline(file_regression):
@@ -92,3 +119,77 @@ def test_discord_to_phone_two_speakers(file_regression):
     file_regression.check(
         wav_bytes, binary=True, extension=".wav", check_fn=wav_samples_check
     )
+
+
+def test_agc_mixed_loudness(file_regression):
+    """AGC normalizes varied loudness levels through the full pipeline.
+
+    Uses distinct voice samples per speaker so each has unique spectral
+    characteristics — more realistic than re-scaling the same two voices.
+    """
+    joe = [resample_to_48k_frames(FIXTURES / f"joe_{i}.wav") for i in range(1, 7)]
+    kathleen = [
+        resample_to_48k_frames(FIXTURES / f"kathleen_{i}.wav") for i in range(1, 7)
+    ]
+
+    # Scale each voice to a target level (keep below -14 dBFS to avoid
+    # hard-clipping peaks; speech crest factor is ~13.5 dB).
+    seg_len = 150  # 150 frames = 3s
+
+    # Segment 1: quiet joe + loud kathleen
+    seg1: dict[int, list[bytes]] = {
+        1: _scale_frames(joe[0], -35.0)[:seg_len],
+        2: _scale_frames(kathleen[0], -15.0)[:seg_len],
+    }
+    # Segment 2: two quiet speakers (joe + kathleen)
+    seg2: dict[int, list[bytes]] = {
+        3: _scale_frames(joe[1], -28.0)[:seg_len],
+        4: _scale_frames(kathleen[1], -35.0)[:seg_len],
+    }
+    # Segment 3: two loud speakers (kathleen + joe)
+    seg3: dict[int, list[bytes]] = {
+        5: _scale_frames(kathleen[2], -15.0)[:seg_len],
+        6: _scale_frames(joe[2], -20.0)[:seg_len],
+    }
+    # Segment 4: three speakers at mixed levels
+    seg4: dict[int, list[bytes]] = {
+        7: _scale_frames(kathleen[3], -35.0)[:seg_len],
+        8: _scale_frames(joe[3], -20.0)[:seg_len],
+        9: _scale_frames(kathleen[4], -15.0)[:seg_len],
+    }
+
+    # Stitch segments sequentially through a single AGC bank
+    agc_bank = AgcBank()
+    all_wav_parts = []
+    for segment in [seg1, seg2, seg3, seg4]:
+        wav_bytes = _run_sink(segment, agc_bank=agc_bank)
+        all_wav_parts.append(wav_bytes)
+
+    # Concatenate the raw PCM from each WAV segment with 0.5s silence gaps
+    silence_gap = np.zeros(4000, dtype=np.int16)  # 0.5s at 8kHz
+    pcm_parts = []
+    for wav_bytes in all_wav_parts:
+        samples, sr = read_wav_bytes(wav_bytes)
+        if pcm_parts:
+            pcm_parts.append(silence_gap)
+        pcm_parts.append(samples)
+    combined_pcm = np.concatenate(pcm_parts)
+    combined_wav = pcm_to_wav(
+        combined_pcm.tobytes(), channels=1, sampwidth=2, framerate=8000
+    )
+
+    file_regression.check(
+        combined_wav, binary=True, extension=".wav", check_fn=wav_samples_check
+    )
+
+
+def read_wav_bytes(wav_bytes: bytes) -> tuple[np.ndarray, int]:
+    """Read WAV from bytes, return (int16 samples, sample rate)."""
+    import io
+    import wave
+
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        sr = wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+        samples = np.frombuffer(raw, dtype=np.int16)
+    return samples, sr
