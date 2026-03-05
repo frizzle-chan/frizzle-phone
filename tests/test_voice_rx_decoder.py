@@ -1,6 +1,7 @@
 # tests/test_voice_rx_decoder.py
 """Tests for discord_voice_rx decoder: jitter buffer and decoder thread."""
 
+import time
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -136,12 +137,18 @@ class TestDecoderThread:
     def test_destroy_decoder_clears_user_buffer(self):
         stats = VoiceRecvStats()
         dt = DecoderThread(stats=stats)
-        mono = np.zeros(960, dtype=np.int16)
-        with dt._lock:
-            dt._user_buffers[42].append(mono)
-        dt.destroy_decoder(ssrc=1234, user_id=42)
-        tick = dt.pop_tick()
-        assert 42 not in tick
+        dt.start()
+        try:
+            mono = np.zeros(960, dtype=np.int16)
+            with dt._lock:
+                dt._user_buffers[42].append(mono)
+            dt.destroy_decoder(ssrc=1234, user_id=42)
+            # Wait for the queued command to be processed
+            time.sleep(0.05)
+            tick = dt.pop_tick()
+            assert 42 not in tick
+        finally:
+            dt.stop()
 
 
 class TestStereoToMono:

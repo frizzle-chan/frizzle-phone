@@ -76,6 +76,10 @@ class JitterBuffer:
 
 _MAX_USER_BUFFER = 50  # Max buffered frames per user (~1s at 20ms/frame)
 
+# Command sentinels for routing through the packet queue
+_CMD_SET_SSRC = "_set_ssrc"
+_CMD_DESTROY = "_destroy"
+
 
 class DecoderThread(threading.Thread):
     """Consumes decrypted RTP packets, opus-decodes, and buffers per-user PCM frames.
@@ -87,7 +91,7 @@ class DecoderThread(threading.Thread):
     def __init__(self, *, stats: VoiceRecvStats) -> None:
         super().__init__(daemon=True, name=f"voice-rx-decoder-{id(self):x}")
         self._stats = stats
-        self._packet_queue: queue.Queue[tuple[int, RtpPacket] | None] = queue.Queue(
+        self._packet_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue(
             maxsize=500
         )
         self._jitter_buffers: dict[int, JitterBuffer] = defaultdict(
@@ -107,17 +111,14 @@ class DecoderThread(threading.Thread):
             self._packet_queue.put_nowait((ssrc, packet))
 
     def set_ssrc_user(self, ssrc: int, user_id: int) -> None:
-        """Update SSRC to user_id mapping."""
-        self._ssrc_to_user[ssrc] = user_id
+        """Update SSRC→user_id mapping (routed through queue for thread safety)."""
+        with contextlib.suppress(queue.Full):
+            self._packet_queue.put_nowait((_CMD_SET_SSRC, ssrc, user_id))
 
     def destroy_decoder(self, *, ssrc: int, user_id: int | None = None) -> None:
-        """Clean up per-SSRC state and user buffer."""
-        self._jitter_buffers.pop(ssrc, None)
-        self._decoders.pop(ssrc, None)
-        self._ssrc_to_user.pop(ssrc, None)
-        if user_id is not None:
-            with self._lock:
-                self._user_buffers.pop(user_id, None)
+        """Clean up per-SSRC state and user buffer (routed through queue)."""
+        with contextlib.suppress(queue.Full):
+            self._packet_queue.put_nowait((_CMD_DESTROY, ssrc, user_id))
 
     def pop_tick(self) -> dict[int, np.ndarray]:
         """Pop one frame per user. Called from the RTP send loop every 20ms."""
@@ -140,6 +141,20 @@ class DecoderThread(threading.Thread):
         self._stop_event.set()
         self._packet_queue.put(None)  # unblock get()
 
+    def _handle_command(self, cmd: tuple[Any, ...]) -> None:
+        """Process a command tuple on the decoder thread."""
+        if cmd[0] == _CMD_SET_SSRC:
+            _, ssrc, user_id = cmd
+            self._ssrc_to_user[ssrc] = user_id
+        elif cmd[0] == _CMD_DESTROY:
+            _, ssrc, user_id = cmd
+            self._jitter_buffers.pop(ssrc, None)
+            self._decoders.pop(ssrc, None)
+            self._ssrc_to_user.pop(ssrc, None)
+            if user_id is not None:
+                with self._lock:
+                    self._user_buffers.pop(user_id, None)
+
     def run(self) -> None:
         """Thread main loop: dequeue packets, jitter-buffer, opus decode, buffer."""
         from discord.opus import Decoder as OpusDecoder
@@ -152,6 +167,11 @@ class DecoderThread(threading.Thread):
 
             if item is None:
                 break
+
+            # Handle command tuples routed through the queue
+            if isinstance(item[0], str):
+                self._handle_command(item)
+                continue
 
             ssrc, packet = item
             user_id = self._ssrc_to_user.get(ssrc)

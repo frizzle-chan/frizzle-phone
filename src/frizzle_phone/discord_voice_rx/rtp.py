@@ -23,7 +23,7 @@ def parse_rtp(data: bytes) -> RtpPacket:
 
 
 class _PacketCmpMixin:
-    __slots__ = ("ssrc", "sequence", "timestamp")
+    __slots__ = ()
 
     ssrc: int
     sequence: int
@@ -33,19 +33,19 @@ class _PacketCmpMixin:
     def __lt__(self, other: _PacketCmpMixin) -> bool:
         if self.ssrc != other.ssrc:
             raise TypeError(f"packet ssrc mismatch ({self.ssrc}, {other.ssrc})")
-        return self.sequence < other.sequence and self.timestamp < other.timestamp
+        return self.sequence < other.sequence
 
     def __gt__(self, other: _PacketCmpMixin) -> bool:
         if self.ssrc != other.ssrc:
             raise TypeError(f"packet ssrc mismatch ({self.ssrc}, {other.ssrc})")
-        return self.sequence > other.sequence and self.timestamp > other.timestamp
+        return self.sequence > other.sequence
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _PacketCmpMixin):
             return NotImplemented
         if self.ssrc != other.ssrc:
             return False
-        return self.sequence == other.sequence and self.timestamp == other.timestamp
+        return self.sequence == other.sequence
 
     def is_silence(self) -> bool:
         return self.decrypted_data == OPUS_SILENCE

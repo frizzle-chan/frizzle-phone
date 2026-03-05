@@ -106,7 +106,8 @@ class VoiceRecvClient(discord.VoiceClient):
 
         try:
             packet = parse_rtp(packet_data)
-            assert self._decryptor is not None
+            if self._decryptor is None:
+                return
             transport_decrypted = self._decryptor.decrypt_rtp(packet)
 
             # Apply DAVE decryption if available
