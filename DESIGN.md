@@ -90,7 +90,8 @@ graph LR
     subgraph AL["Asyncio event loop (every 20ms)"]
         direction TB
         DRAIN["drain()"] -->|group by user| SLOTS[Slot queue]
-        SLOTS -->|pop 1 slot| MIX{"Mix if multiple<br/>speakers"}
+        SLOTS -->|pop 1 slot| AGC["Per-speaker AGC<br/>(AgcBank)"]
+        AGC --> MIX{"Mix if multiple<br/>speakers"}
         MIX --> RS["Resample 48→8kHz<br/>(ChunkedResampler)"]
         RS --> RTP["μ-law → RTP → phone"]
     end
@@ -138,7 +139,9 @@ Queue caps at 50 slots (~1s); oldest dropped on overflow.
 
 **Timing:** The `rtp_send_loop` runs on a strict 20ms wall-clock cadence using `time.monotonic()`. If the loop falls behind (e.g. event loop congestion), it snaps forward to avoid bursting catch-up packets. The resampler is reset after silence gaps to avoid filtering stale state.
 
-**Mixing:** When a slot has multiple speakers, their mono samples are summed in int32 and clipped back to int16. Single-speaker slots skip the mix entirely.
+**AGC:** Per-speaker automatic gain control (`AgcBank`) normalizes each speaker's level to -20 dBFS before mixing. Uses RMS-based gain with asymmetric time constants (500ms attack, 50ms release) and a -50 dBFS noise gate. Gain is clamped to [-10, +20] dB. Stale speakers are expired after 30s of inactivity.
+
+**Mixing:** When a slot has multiple speakers, their mono samples are summed in int32 with 1/sqrt(N) gain scaling and clipped back to int16. Single-speaker slots skip the mix entirely.
 
 ### Resampling
 

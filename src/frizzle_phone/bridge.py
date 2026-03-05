@@ -19,6 +19,7 @@ import numpy as np
 import soxr
 from discord.ext import voice_recv
 
+from frizzle_phone.agc import AgcBank
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp import pcmu
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw
@@ -194,6 +195,7 @@ async def rtp_send_loop(
     loop = asyncio.get_running_loop()
     resampler = _new_resampler()
     was_silent = True
+    agc_bank = AgcBank()
     slot_queue: deque[dict[int, np.ndarray]] = deque()
     payload_queue: deque[bytes] = deque()
 
@@ -229,6 +231,7 @@ async def rtp_send_loop(
             fed_this_tick = True
             was_silent = False
 
+            slot = agc_bank.process_slot(slot)
             if stats:
                 stats.d2p_frames_mixed += 1
             mixed = mix_slot(slot)
@@ -279,3 +282,4 @@ async def rtp_send_loop(
 
         if stats:
             loop.call_soon(stats.maybe_log_and_reset)
+            agc_bank.expire_stale()
