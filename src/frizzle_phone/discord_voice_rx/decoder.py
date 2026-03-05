@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from frizzle_phone.audio_utils import stereo_to_mono
+
 if TYPE_CHECKING:
     from .rtp import RtpPacket, _PacketCmpMixin
     from .stats import VoiceRecvStats
@@ -72,15 +74,6 @@ class JitterBuffer:
             self._last_seq = packets[-1].sequence
         self._prefill_remaining = self._prefill
         return packets
-
-
-def stereo_to_mono(data: bytes) -> np.ndarray:
-    """Convert 48 kHz stereo s16le PCM to mono int16 array."""
-    stereo = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
-    mixed = stereo[:, 0].astype(np.int32)
-    mixed += stereo[:, 1]
-    mixed >>= 1
-    return mixed.astype(np.int16)
 
 
 _MAX_USER_BUFFER = 50  # Max buffered frames per user (~1s at 20ms/frame)

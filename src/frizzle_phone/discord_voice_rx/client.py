@@ -40,11 +40,15 @@ class VoiceRecvClient(discord.VoiceClient):
     def _add_ssrc(self, user_id: int, ssrc: int) -> None:
         self._ssrc_to_id[ssrc] = user_id
         self._id_to_ssrc[user_id] = ssrc
+        if self._decoder_thread:
+            self._decoder_thread.set_ssrc_user(ssrc, user_id)
 
     def _remove_ssrc(self, *, user_id: int) -> None:
         ssrc = self._id_to_ssrc.pop(user_id, None)
         if ssrc is not None:
             self._ssrc_to_id.pop(ssrc, None)
+            if self._decoder_thread:
+                self._decoder_thread.destroy_decoder(ssrc=ssrc, user_id=user_id)
 
     def _update_secret_key(self) -> None:
         """Update decryptor with the current secret key from the WS."""

@@ -28,6 +28,7 @@ class _PacketCmpMixin:
     ssrc: int
     sequence: int
     timestamp: int
+    decrypted_data: bytes | None
 
     def __lt__(self, other: _PacketCmpMixin) -> bool:
         if self.ssrc != other.ssrc:
@@ -47,8 +48,7 @@ class _PacketCmpMixin:
         return self.sequence == other.sequence and self.timestamp == other.timestamp
 
     def is_silence(self) -> bool:
-        data = getattr(self, "decrypted_data", None)
-        return data == OPUS_SILENCE
+        return self.decrypted_data == OPUS_SILENCE
 
 
 class RtpPacket(_PacketCmpMixin):

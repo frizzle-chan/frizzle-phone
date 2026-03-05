@@ -23,28 +23,19 @@ async def hook(ws, msg: dict[str, Any]) -> None:
     data: dict[str, Any] = msg.get("d", {})
     vc = ws._connection.voice_client
 
-    if op == ws.READY:
+    if op == READY:
         ssrc = data["ssrc"]
         own_id = vc.guild.me.id
-        vc._ssrc_to_id[ssrc] = own_id
-        vc._id_to_ssrc[own_id] = ssrc
+        vc._add_ssrc(own_id, ssrc)
 
     elif op == SPEAKING:
         uid = int(data["user_id"])
         ssrc = data["ssrc"]
-        vc._ssrc_to_id[ssrc] = uid
-        vc._id_to_ssrc[uid] = ssrc
-        if vc._decoder_thread:
-            vc._decoder_thread.set_ssrc_user(ssrc, uid)
+        vc._add_ssrc(uid, ssrc)
 
     elif op == CLIENT_DISCONNECT:
         uid = int(data["user_id"])
-        ssrc = vc._id_to_ssrc.get(uid)
-        if ssrc is not None:
-            vc._ssrc_to_id.pop(ssrc, None)
-            vc._id_to_ssrc.pop(uid, None)
-            if vc._decoder_thread:
-                vc._decoder_thread.destroy_decoder(ssrc=ssrc, user_id=uid)
+        vc._remove_ssrc(user_id=uid)
 
-    elif op == ws.SESSION_DESCRIPTION:
+    elif op == SESSION_DESCRIPTION:
         vc._update_secret_key()

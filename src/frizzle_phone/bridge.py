@@ -20,6 +20,7 @@ import soxr
 from discord.ext import voice_recv
 
 from frizzle_phone.agc import AgcBank
+from frizzle_phone.audio_utils import stereo_to_mono as stereo_to_mono
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp import pcmu
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw
@@ -32,15 +33,6 @@ ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
 MAX_SLOT_QUEUE = 50  # 1s max buffer, bounds latency
 DISCORD_SAMPLE_RATE = 48000  # discord.py Encoder.SAMPLING_RATE (Opus mandates 48kHz)
 DISCORD_FRAME_SAMPLES = DISCORD_SAMPLE_RATE * PTIME_MS // 1000  # 960
-
-
-def stereo_to_mono(data: bytes) -> np.ndarray:
-    """Convert 48kHz stereo s16le PCM to mono int16 array."""
-    stereo = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
-    mixed = stereo[:, 0].astype(np.int32)
-    mixed += stereo[:, 1]
-    mixed >>= 1
-    return mixed.astype(np.int16)
 
 
 def mix_slot(slot: dict[int, np.ndarray]) -> np.ndarray:

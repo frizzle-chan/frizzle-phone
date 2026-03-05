@@ -44,39 +44,31 @@ class PacketDecryptor:
     def update_secret_key(self, secret_key: bytes) -> None:
         self._box = self._make_box(secret_key)
 
+    @staticmethod
+    def _strip_ext(packet: RtpPacket, result: bytes) -> bytes:
+        if packet.extended:
+            offset = packet.update_ext_headers(result)
+            return result[offset:]
+        return result
+
     def _decrypt_rtp_xsalsa20_poly1305(self, packet: RtpPacket) -> bytes:
         nonce = bytearray(24)
         nonce[:12] = packet.header
         result = self._box.decrypt(bytes(packet.data), bytes(nonce))
-
-        if packet.extended:
-            offset = packet.update_ext_headers(result)
-            result = result[offset:]
-
-        return result
+        return self._strip_ext(packet, result)
 
     def _decrypt_rtp_xsalsa20_poly1305_suffix(self, packet: RtpPacket) -> bytes:
         nonce = packet.data[-24:]
         voice_data = packet.data[:-24]
         result = self._box.decrypt(bytes(voice_data), bytes(nonce))
-
-        if packet.extended:
-            offset = packet.update_ext_headers(result)
-            result = result[offset:]
-
-        return result
+        return self._strip_ext(packet, result)
 
     def _decrypt_rtp_xsalsa20_poly1305_lite(self, packet: RtpPacket) -> bytes:
         nonce = bytearray(24)
         nonce[:4] = packet.data[-4:]
         voice_data = packet.data[:-4]
         result = self._box.decrypt(bytes(voice_data), bytes(nonce))
-
-        if packet.extended:
-            offset = packet.update_ext_headers(result)
-            result = result[offset:]
-
-        return result
+        return self._strip_ext(packet, result)
 
     def _decrypt_rtp_aead_xchacha20_poly1305_rtpsize(self, packet: RtpPacket) -> bytes:
         packet.adjust_rtpsize()
@@ -89,12 +81,7 @@ class PacketDecryptor:
         result = self._box.decrypt(
             bytes(voice_data), bytes(packet.header), bytes(nonce)
         )
-
-        if packet.extended:
-            offset = packet.update_ext_headers(result)
-            result = result[offset:]
-
-        return result
+        return self._strip_ext(packet, result)
 
 
 def dave_decrypt(
@@ -110,6 +97,17 @@ def dave_decrypt(
     uid = ssrc_to_id.get(ssrc)
     if uid is None:
         return transport_decrypted
-    import davey
+    return dave_session.decrypt(uid, _davey().MediaType.audio, transport_decrypted)  # type: ignore[union-attr]
 
-    return dave_session.decrypt(uid, davey.MediaType.audio, transport_decrypted)  # type: ignore[union-attr]
+
+def _davey():  # noqa: ANN202
+    """Lazy-import davey to avoid hard dependency."""
+    global _davey_module  # noqa: PLW0603
+    if _davey_module is None:
+        import davey
+
+        _davey_module = davey
+    return _davey_module
+
+
+_davey_module = None

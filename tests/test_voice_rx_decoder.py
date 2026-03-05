@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from frizzle_phone.audio_utils import stereo_to_mono
 from frizzle_phone.discord_voice_rx.decoder import (
     DecoderThread,
     JitterBuffer,
-    stereo_to_mono,
 )
 from frizzle_phone.discord_voice_rx.stats import VoiceRecvStats
 
