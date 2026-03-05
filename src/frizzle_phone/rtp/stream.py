@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 RTP_VERSION = 2
 PAYLOAD_TYPE_PCMU = 0
+PAYLOAD_TYPE_TELEPHONE_EVENT = 101  # RFC 4733 — dynamic, conventionally 101
 PTIME_MS = 20
 SAMPLES_PER_PACKET = 160  # SAMPLE_RATE * PTIME_MS // 1000
 
