@@ -224,8 +224,11 @@ async def rtp_send_loop(
             if len(slot) == 1:
                 mixed = next(iter(slot.values()))
             else:
+                summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
+                # 1/sqrt(N) gain keeps loudness without harsh clipping.
+                gain = 1.0 / np.sqrt(len(slot))
                 mixed = np.clip(
-                    np.sum(list(slot.values()), axis=0, dtype=np.int32),
+                    (summed * gain).astype(np.int32),
                     -32768,
                     32767,
                 ).astype(np.int16)
