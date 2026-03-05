@@ -63,6 +63,7 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 ## Documentation
 
 - `DESIGN.md` documents the architecture, call flow, and audio pipeline — keep it up to date when changing components, call flow, or audio bridge logic
+- When adding new technical concepts to `DESIGN.md`, add a footnote reference (`[^key]`) on the first occurrence and a footnote definition at the bottom (keep definitions sorted alphabetically by key)
 
 ## Conventions
 
