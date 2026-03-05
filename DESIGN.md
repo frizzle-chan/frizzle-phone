@@ -24,7 +24,7 @@ graph LR
 
 ### Discord Bot
 
-[`bot.py`](src/frizzle_phone/bot.py), [`phone_cog.py`](src/frizzle_phone/phone_cog.py): Minimal discord.py bot (guild + voice_states intents). PhoneCog watches `on_voice_state_update` to detect bot disconnects and sends BYE. Reconciliation loop (30s) catches orphaned calls after crashes.
+[`bot.py`](src/frizzle_phone/bot.py), [`phone_cog.py`](src/frizzle_phone/phone_cog.py): Minimal discord.py bot (guild + voice_states intents). PhoneCog watches `on_voice_state_update` to detect bot disconnects and sends BYE. Reconciliation loop (30s) catches orphaned calls after crashes. Voice receive is handled by the in-house [`discord_voice_rx`](src/frizzle_phone/discord_voice_rx/) module — a `VoiceRecvClient` subclass of `discord.VoiceClient` that decrypts and decodes incoming Opus frames.
 
 ### Web UI
 
@@ -74,30 +74,37 @@ sequenceDiagram
 
 ## Discord→Phone Audio Pipeline
 
-The d2p (Discord-to-Phone) path is the trickiest part of the bridge. Discord delivers decoded PCM frames on a **callback thread**, bursty, multi-speaker, and not aligned to RTP's strict 20ms cadence.
+The d2p (Discord-to-Phone) path is the trickiest part of the bridge. Discord voice packets arrive on a **socket callback thread**, bursty, multi-speaker, and not aligned to RTP's strict 20ms cadence. The in-house `discord_voice_rx` module handles decryption and decoding in a pipeline that feeds the bridge via a lock-free `pop_tick()` pull interface.
 
 ```mermaid
 graph LR
-    subgraph CB["Callback thread (bursty)"]
+    subgraph SC["Socket callback thread"]
         direction TB
-        OPUS[Discord Opus] -->|decrypt + decode| PCM[PCM frames]
-        PCM -->|"stereo→mono"| WRITE["write()"]
+        UDP[Discord UDP] -->|parse| RTP_PKT[RTP packet]
+        RTP_PKT -->|"nacl + DAVE<br/>decrypt"| ENC[Encrypted Opus]
     end
 
-    CB -->|append under lock| BUF[("Lock-protected<br/>buffer")]
-    BUF -->|atomic swap| AL
+    SC -->|queue| DT
+
+    subgraph DT["Decoder thread"]
+        direction TB
+        JB["Jitter buffer<br/>(per-SSRC)"] -->|sequence-order| DEC[Opus decode]
+        DEC -->|"stereo→mono"| FRAMES["Per-user frame<br/>buffers"]
+    end
+
+    DT -->|"pop_tick()"| AL
 
     subgraph AL["Asyncio event loop (every 20ms)"]
         direction TB
-        DRAIN["drain()"] -->|group by user| SLOTS[Slot queue]
+        PULL["pop_tick()"] -->|"dict[user, frame]"| SLOTS[Slot queue]
         SLOTS -->|pop 1 slot| AGC["Per-speaker AGC<br/>(AgcBank)"]
         AGC --> MIX{"Mix if multiple<br/>speakers"}
         MIX --> RS["Resample 48→8kHz<br/>(ChunkedResampler)"]
-        RS --> RTP["μ-law → RTP → phone"]
+        RS --> RTP_OUT["μ-law → RTP → phone"]
     end
 ```
 
-**Slot queue:** Discord delivers decoded PCM on a callback thread in bursts, not at a steady 20ms cadence. The slot queue buffers incoming frames and re-paces them to match RTP's strict 20ms timing.
+**Slot queue:** `pop_tick()` returns one frame per active speaker (`dict[int, ndarray]`) each time the bridge's RTP send loop ticks. The slot queue buffers these multi-speaker snapshots and re-paces them to match RTP's strict 20ms timing.
 
 ```
 Single speaker says "Hi it's frizzle" (6 frames, 20ms each).
