@@ -1,4 +1,4 @@
-# Design: discord_voice_rx — In-house Discord Voice Receive
+# Design: discord_voice_rx - In-house Discord Voice Receive
 
 ## Overview
 
@@ -90,11 +90,11 @@ class VoiceRecvClient(discord.VoiceClient):
 ## Changes to Existing Code
 
 ### bridge.py
-- `PhoneAudioSink` deleted — no more sink class, drain(), or lock
+- `PhoneAudioSink` deleted (no more sink class, drain(), or lock)
 - `stereo_to_mono()` moves into `decoder.py` (library responsibility)
 - `rtp_send_loop` changes:
   - Replace `sink.drain()` + slot detection with `voice_client.pop_tick()`
-  - Each tick returns a ready-to-mix `dict[int, ndarray]` — directly fed to `agc_bank.process_slot()` then `mix_slot()`
+  - Each tick returns a ready-to-mix `dict[int, ndarray]`, directly fed to `agc_bank.process_slot()` then `mix_slot()`
   - The slot queue is replaced by per-user frame deques inside the library
 
 ### bridge_manager.py
@@ -103,7 +103,7 @@ class VoiceRecvClient(discord.VoiceClient):
 - Pass `voice_client` to `rtp_send_loop` instead of `sink`
 
 ### discord_patches.py
-- Deleted entirely — DAVE decryption and opus error handling are built into the library
+- Deleted entirely. DAVE decryption and opus error handling are built into the library
 
 ### sip/server.py
 - `channel.connect(cls=voice_recv.VoiceRecvClient)` -> `channel.connect(cls=discord_voice_rx.VoiceRecvClient)`
@@ -167,7 +167,7 @@ Single daemon thread:
 
 `pop_tick()` (called from asyncio thread):
 - Acquire lock, pop one frame from each non-empty user deque, release lock
-- Returns `dict[int, ndarray]` — maps user_id -> mono PCM (960 samples)
+- Returns `dict[int, ndarray]` mapping user_id to mono PCM (960 samples)
 
 ## Gateway Hook
 

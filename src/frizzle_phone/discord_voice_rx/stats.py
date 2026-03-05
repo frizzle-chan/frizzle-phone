@@ -11,7 +11,7 @@ _SUMMARY_INTERVAL_S = 5.0
 class VoiceRecvStats:
     """Lightweight counters for diagnosing voice receive performance.
 
-    All fields are plain ints — callers do ``time.monotonic()`` +
+    All fields are plain ints. Callers do ``time.monotonic()`` +
     integer increments in the hot path, keeping overhead negligible.
     """
 

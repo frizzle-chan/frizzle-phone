@@ -17,7 +17,7 @@ _SUMMARY_INTERVAL_S = 5.0
 class BridgeStats:
     """Lightweight counters for diagnosing audio bridge performance.
 
-    All fields are plain ints/floats — callers do ``time.monotonic()`` +
+    All fields are plain ints/floats. Callers do ``time.monotonic()`` +
     integer increments in the hot path, keeping overhead negligible.
     """
 

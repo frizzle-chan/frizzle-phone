@@ -196,7 +196,7 @@ class DecoderThread(threading.Thread):
 
                     opus_data = ready.decrypted_data
                     if opus_data is None:
-                        # No payload — decode with packet loss concealment
+                        # No payload: decode with packet loss concealment
                         pcm = decoder.decode(None, fec=False)
                     else:
                         pcm = decoder.decode(opus_data, fec=False)

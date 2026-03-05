@@ -24,7 +24,7 @@ graph LR
 
 ### Discord Bot
 
-[`bot.py`](src/frizzle_phone/bot.py), [`phone_cog.py`](src/frizzle_phone/phone_cog.py): Minimal discord.py bot (guild + voice_states intents). PhoneCog watches `on_voice_state_update` to detect bot disconnects and sends BYE. Reconciliation loop (30s) catches orphaned calls after crashes. Voice receive is handled by the in-house [`discord_voice_rx`](src/frizzle_phone/discord_voice_rx/) module — a `VoiceRecvClient` subclass of `discord.VoiceClient` that decrypts and decodes incoming Opus frames.
+[`bot.py`](src/frizzle_phone/bot.py), [`phone_cog.py`](src/frizzle_phone/phone_cog.py): Minimal discord.py bot (guild + voice_states intents). PhoneCog watches `on_voice_state_update` to detect bot disconnects and sends BYE. Reconciliation loop (30s) catches orphaned calls after crashes. Voice receive is handled by the in-house [`discord_voice_rx`](src/frizzle_phone/discord_voice_rx/) module, a `VoiceRecvClient` subclass of `discord.VoiceClient` that decrypts and decodes incoming Opus frames.
 
 ### Web UI
 
@@ -81,7 +81,7 @@ graph LR
     subgraph SC["Socket callback thread"]
         direction TB
         UDP[Discord UDP] -->|parse| RTP_PKT[RTP packet]
-        RTP_PKT -->|"nacl + DAVE<br/>decrypt"| ENC[Encrypted Opus]
+        RTP_PKT -->|"nacl + DAVE<br/>decrypt"| DEC_OPUS[Decrypted Opus]
     end
 
     SC -->|queue| DT
@@ -104,7 +104,7 @@ graph LR
     end
 ```
 
-**Slot queue:** Each `pop_tick()` call returns a slot — a `dict[int, ndarray]` mapping user IDs to their mono PCM frame for that tick. The decoder thread groups frames by user internally, so each slot is already a complete multi-speaker snapshot. The slot queue buffers these and the RTP send loop pops one slot every 20ms.
+**Slot queue:** Each `pop_tick()` call returns a slot: a `dict[int, ndarray]` mapping user IDs to their mono PCM frame for that tick. The decoder thread groups frames by user internally, so each slot is already a complete multi-speaker snapshot. The slot queue buffers these and the RTP send loop pops one slot every 20ms.
 
 ```
 Single speaker says "Hi it's frizzle" (6 frames, 20ms each).

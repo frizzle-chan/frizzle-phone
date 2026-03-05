@@ -1,4 +1,4 @@
-"""Vulture whitelist — attributes used dynamically."""
+"""Vulture whitelist: attributes used dynamically."""
 
 # Used in extensions.html template (guild.id, channel.id)
 _.id  # type: ignore[name-defined]

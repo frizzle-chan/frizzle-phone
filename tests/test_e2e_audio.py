@@ -51,10 +51,10 @@ class _PacedPopper:
 @pytest.mark.asyncio
 async def test_dave_to_rtp_e2e(file_regression):
     """Full E2E: opus encode → decode → paced popper → RTP/UDP → golden file."""
-    # Step 1 — Prepare audio frames
+    # Step 1: Prepare audio frames
     frames = resample_to_48k_frames(FIXTURES / "speech_sample.wav")
 
-    # Step 2 — Opus encode → decode → mono
+    # Step 2: Opus encode → decode → mono
     encoder = discord.opus.Encoder()
     decoder = discord.opus.Decoder()
     user_id = 42
@@ -65,7 +65,7 @@ async def test_dave_to_rtp_e2e(file_regression):
         decoded_pcm = decoder.decode(opus_data, fec=False)
         mono_frames.append((user_id, stereo_to_mono(decoded_pcm)))
 
-    # Step 3 — Send over real UDP via rtp_send_loop with paced popper
+    # Step 3: Send over real UDP via rtp_send_loop with paced popper
     popper = _PacedPopper(mono_frames)
 
     loop = asyncio.get_running_loop()
@@ -106,7 +106,7 @@ async def test_dave_to_rtp_e2e(file_regression):
         f"Only received {len(collector.packets)}/{expected_count} packets"
     )
 
-    # Step 4 — Collect, decode, compare
+    # Step 4: Collect, decode, compare
     received_ulaw = b""
     for pkt in collector.packets[:expected_count]:
         received_ulaw += _parse_rtp_payload(pkt)
@@ -114,7 +114,7 @@ async def test_dave_to_rtp_e2e(file_regression):
     pcm_8k = ulaw_to_pcm(received_ulaw)
     wav_bytes = pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)
 
-    # Opus encode/decode amplifies soxr platform jitter — use wider thresholds
+    # Opus encode/decode amplifies soxr platform jitter; use wider thresholds
     # than the direct-PCM golden tests (observed cross-platform RMSE ~108 on
     # Ubuntu, ~311 on Arch due to libopus/soxr build differences).
     check_fn = partial(wav_samples_check, max_rmse=350.0, min_correlation=0.98)

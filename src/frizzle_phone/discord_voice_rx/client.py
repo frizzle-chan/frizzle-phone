@@ -1,4 +1,4 @@
-"""VoiceRecvClient — discord.VoiceClient subclass that receives voice audio."""
+"""VoiceRecvClient: discord.VoiceClient subclass that receives voice audio."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ class VoiceRecvClient(discord.VoiceClient):
         return self._recv_stats
 
     def _socket_callback_fn(self, packet_data: bytes) -> None:
-        """Socket callback — parse, decrypt, feed to decoder thread."""
+        """Socket callback: parse, decrypt, feed to decoder thread."""
         t0 = time.monotonic()
         self._recv_stats.packets_in += 1
 
@@ -127,7 +127,7 @@ class VoiceRecvClient(discord.VoiceClient):
             if elapsed_us > self._recv_stats.max_callback_us:
                 self._recv_stats.max_callback_us = elapsed_us
 
-        # Filter unknown SSRCs — decoder thread drops them anyway
+        # Filter unknown SSRCs (decoder thread drops them anyway)
         if packet.ssrc not in self._ssrc_to_id:
             return
 
