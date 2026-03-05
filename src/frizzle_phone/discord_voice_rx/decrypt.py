@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import nacl.secret
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .rtp import RtpPacket
@@ -98,7 +101,11 @@ def dave_decrypt(
     uid = ssrc_to_id.get(ssrc)
     if uid is None:
         return transport_decrypted
-    return dave_session.decrypt(uid, _davey().MediaType.audio, transport_decrypted)  # type: ignore[union-attr]
+    try:
+        return dave_session.decrypt(uid, _davey().MediaType.audio, transport_decrypted)  # type: ignore[union-attr]
+    except Exception:
+        log.debug("DAVE decrypt failed for uid=%d, passing through", uid)
+        return transport_decrypted
 
 
 def _davey():  # noqa: ANN202

@@ -262,3 +262,16 @@ class TestDaveDecrypt:
         )
         assert result == b"original"
         dave_session.decrypt.assert_not_called()
+
+    def test_dave_decrypt_failure_falls_back(self):
+        dave_session = MagicMock()
+        dave_session.ready = True
+        dave_session.decrypt.side_effect = RuntimeError("DecryptionFailed")
+
+        result = dave_decrypt(
+            dave_session=dave_session,
+            ssrc_to_id={1234: 42},
+            ssrc=1234,
+            transport_decrypted=b"original",
+        )
+        assert result == b"original"

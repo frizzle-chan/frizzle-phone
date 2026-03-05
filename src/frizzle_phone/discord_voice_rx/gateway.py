@@ -15,7 +15,6 @@ READY = 2
 SESSION_DESCRIPTION = 4
 SPEAKING = 5
 CLIENT_DISCONNECT = 13
-DAVE_PREPARE_EPOCH = 24
 
 
 async def hook(ws, msg: dict[str, Any]) -> None:
@@ -40,9 +39,3 @@ async def hook(ws, msg: dict[str, Any]) -> None:
 
     elif op == SESSION_DESCRIPTION:
         vc._update_secret_key()
-
-    elif op == DAVE_PREPARE_EPOCH:
-        dave_session = getattr(ws._connection, "dave_session", None)
-        if dave_session is not None:
-            dave_session.set_passthrough_mode(True, 10)
-            log.debug("Enabled DAVE passthrough for epoch transition")
