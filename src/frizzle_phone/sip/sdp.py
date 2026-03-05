@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import re
+
+from frizzle_phone.rtp.stream import PAYLOAD_TYPE_TELEPHONE_EVENT
+
+_RTPMAP_TELEPHONE_EVENT_RE = re.compile(r"a=rtpmap:(\d+)\s+telephone-event/")
 
 
 @dataclasses.dataclass
@@ -11,12 +16,14 @@ class SdpOffer:
 
     audio_port: int
     connection_address: str
+    telephone_event_pt: int | None = None
 
 
 def parse_sdp_offer(sdp: str) -> SdpOffer:
     """Extract audio port and connection address from an SDP offer."""
     audio_port = 0
     connection_address = "0.0.0.0"
+    telephone_event_pt: int | None = None
 
     for line in sdp.splitlines():
         line = line.strip()
@@ -33,8 +40,15 @@ def parse_sdp_offer(sdp: str) -> SdpOffer:
             # we strip everything after "/" to handle both cases.
             addr = line[len("c=IN IP4 ") :]
             connection_address = addr.split("/")[0].strip()
+        elif m := _RTPMAP_TELEPHONE_EVENT_RE.match(line):
+            # RFC 4733 §2.5.1.2: dynamic PT for DTMF telephone-event
+            telephone_event_pt = int(m.group(1))
 
-    return SdpOffer(audio_port=audio_port, connection_address=connection_address)
+    return SdpOffer(
+        audio_port=audio_port,
+        connection_address=connection_address,
+        telephone_event_pt=telephone_event_pt,
+    )
 
 
 def build_sdp_answer(server_ip: str, rtp_port: int = 10000) -> str:
@@ -65,7 +79,7 @@ def build_sdp_answer(server_ip: str, rtp_port: int = 10000) -> str:
         # Proto "RTP/AVP" = RTP under the Audio/Video Profile (RFC 3551).
         # Fmt "0" = static payload type for PCMU (RFC 3551 §6, Table 4:
         # PT 0 = PCMU, 8000 Hz, 1 channel)
-        f"m=audio {rtp_port} RTP/AVP 0",
+        f"m=audio {rtp_port} RTP/AVP 0 {PAYLOAD_TYPE_TELEPHONE_EVENT}",
         # RFC 4566 §6 (a=rtpmap): maps PT 0 to PCMU/8000.
         # Not strictly required for static PTs, but RFC 3264 §6.1 says
         # the answer SHOULD contain rtpmap mappings for static types.
@@ -74,6 +88,9 @@ def build_sdp_answer(server_ip: str, rtp_port: int = 10000) -> str:
         # RFC 4566 §6 (a=ptime): recommended packetization interval in ms.
         # 20 ms = 160 samples at 8 kHz, a standard PCMU frame size.
         "a=ptime:20",
+        # RFC 4733 §2.5.1.2: telephone-event for DTMF digits 0-15
+        f"a=rtpmap:{PAYLOAD_TYPE_TELEPHONE_EVENT} telephone-event/8000",
+        f"a=fmtp:{PAYLOAD_TYPE_TELEPHONE_EVENT} 0-15",
         "",
     ]
     return "\r\n".join(lines)
