@@ -42,6 +42,16 @@ def stereo_to_mono(data: bytes) -> np.ndarray:
     return mixed.astype(np.int16)
 
 
+def mix_slot(slot: dict[int, np.ndarray]) -> np.ndarray:
+    """Mix multiple PCM16 speaker arrays with 1/sqrt(N) gain scaling."""
+    if len(slot) == 1:
+        return next(iter(slot.values()))
+    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
+    # 1/sqrt(N) gain keeps loudness without harsh clipping.
+    gain = 1.0 / np.sqrt(len(slot))
+    return np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(np.int16)
+
+
 class PhoneAudioSource(discord.AudioSource):
     """Feeds phone audio to Discord voice channel."""
 
@@ -221,14 +231,7 @@ async def rtp_send_loop(
 
             if stats:
                 stats.d2p_frames_mixed += 1
-            if len(slot) == 1:
-                mixed = next(iter(slot.values()))
-            else:
-                mixed = np.clip(
-                    np.sum(list(slot.values()), axis=0, dtype=np.int32),
-                    -32768,
-                    32767,
-                ).astype(np.int16)
+            mixed = mix_slot(slot)
 
             for chunk_8k in resampler.feed(mixed):
                 payload_queue.append(pcm16_arr_to_ulaw(chunk_8k))
