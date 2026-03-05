@@ -122,41 +122,40 @@ def test_discord_to_phone_two_speakers(file_regression):
 
 
 def test_agc_mixed_loudness(file_regression):
-    """AGC normalizes varied loudness levels through the full pipeline."""
-    frames_1 = resample_to_48k_frames(FIXTURES / "speech_sample.wav")
-    frames_2 = resample_to_48k_frames(FIXTURES / "speech_sample_2.wav")
+    """AGC normalizes varied loudness levels through the full pipeline.
 
-    # Scale to different levels.  The speech samples peak near 0 dBFS
-    # (crest factor ~13.5 dB), so targets above ~-14 dBFS RMS clip peaks
-    # and introduce hard-clipping distortion.  Keep all targets below that.
-    very_quiet = _scale_frames(frames_1, -35.0)
-    quiet = _scale_frames(frames_2, -28.0)
-    normal = _scale_frames(frames_1, -20.0)
-    loud = _scale_frames(frames_2, -15.0)
+    Uses distinct voice samples per speaker so each has unique spectral
+    characteristics — more realistic than re-scaling the same two voices.
+    """
+    joe = [resample_to_48k_frames(FIXTURES / f"joe_{i}.wav") for i in range(1, 7)]
+    kathleen = [
+        resample_to_48k_frames(FIXTURES / f"kathleen_{i}.wav") for i in range(1, 7)
+    ]
 
-    # Build segments: each ~1s, overlapping combinations
-    seg_len = 50  # 50 frames = 1s
+    # Scale each voice to a target level (keep below -14 dBFS to avoid
+    # hard-clipping peaks; speech crest factor is ~13.5 dB).
+    seg_len = 150  # 150 frames = 3s
 
-    # Segment 1: quiet speaker 1 + loud speaker 2
+    # Segment 1: quiet joe + loud kathleen
     seg1: dict[int, list[bytes]] = {
-        1: very_quiet[:seg_len],
-        2: loud[:seg_len],
+        1: _scale_frames(joe[0], -35.0)[:seg_len],
+        2: _scale_frames(kathleen[0], -15.0)[:seg_len],
     }
-    # Segment 2: two quiet speakers
+    # Segment 2: two quiet speakers (joe + kathleen)
     seg2: dict[int, list[bytes]] = {
-        3: quiet[:seg_len],
-        4: very_quiet[:seg_len],
+        3: _scale_frames(joe[1], -28.0)[:seg_len],
+        4: _scale_frames(kathleen[1], -35.0)[:seg_len],
     }
-    # Segment 3: two loud speakers
+    # Segment 3: two loud speakers (kathleen + joe)
     seg3: dict[int, list[bytes]] = {
-        5: loud[:seg_len],
-        6: normal[:seg_len],
+        5: _scale_frames(kathleen[2], -15.0)[:seg_len],
+        6: _scale_frames(joe[2], -20.0)[:seg_len],
     }
     # Segment 4: three speakers at mixed levels
     seg4: dict[int, list[bytes]] = {
-        7: very_quiet[:seg_len],
-        8: normal[:seg_len],
-        9: loud[:seg_len],
+        7: _scale_frames(kathleen[3], -35.0)[:seg_len],
+        8: _scale_frames(joe[3], -20.0)[:seg_len],
+        9: _scale_frames(kathleen[4], -15.0)[:seg_len],
     }
 
     # Stitch segments sequentially through a single AGC bank
@@ -166,10 +165,13 @@ def test_agc_mixed_loudness(file_regression):
         wav_bytes = _run_sink(segment, agc_bank=agc_bank)
         all_wav_parts.append(wav_bytes)
 
-    # Concatenate the raw PCM from each WAV segment
+    # Concatenate the raw PCM from each WAV segment with 0.5s silence gaps
+    silence_gap = np.zeros(4000, dtype=np.int16)  # 0.5s at 8kHz
     pcm_parts = []
     for wav_bytes in all_wav_parts:
         samples, sr = read_wav_bytes(wav_bytes)
+        if pcm_parts:
+            pcm_parts.append(silence_gap)
         pcm_parts.append(samples)
     combined_pcm = np.concatenate(pcm_parts)
     combined_wav = pcm_to_wav(
