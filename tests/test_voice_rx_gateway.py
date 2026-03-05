@@ -7,6 +7,7 @@ import pytest
 
 from frizzle_phone.discord_voice_rx.gateway import (
     CLIENT_DISCONNECT,
+    DAVE_PREPARE_EPOCH,
     READY,
     SESSION_DESCRIPTION,
     SPEAKING,
@@ -64,3 +65,19 @@ async def test_session_description_updates_key(ws, voice_client):
     ws.secret_key = bytes([1, 2, 3] + [0] * 29)
     await hook(ws, msg)
     voice_client._update_secret_key.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dave_prepare_epoch_enables_passthrough(ws):
+    dave_session = MagicMock()
+    ws._connection.dave_session = dave_session
+    msg = {"op": DAVE_PREPARE_EPOCH, "d": {"epoch": 1}}
+    await hook(ws, msg)
+    dave_session.set_passthrough_mode.assert_called_once_with(True, 10)
+
+
+@pytest.mark.asyncio
+async def test_dave_prepare_epoch_noop_without_dave_session(ws):
+    del ws._connection.dave_session
+    msg = {"op": DAVE_PREPARE_EPOCH, "d": {"epoch": 1}}
+    await hook(ws, msg)  # should not raise
