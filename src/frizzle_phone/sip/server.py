@@ -22,9 +22,10 @@ from collections.abc import Callable, Coroutine
 
 import aiosqlite
 import discord
-from discord.ext import commands, voice_recv
+from discord.ext import commands
 
 from frizzle_phone.bridge_manager import BridgeHandle, BridgeManager
+from frizzle_phone.discord_voice_rx import VoiceRecvClient
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
     SipMessage,
@@ -122,7 +123,7 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
 class PendingBridge:
     """Transient state between INVITE (voice connect) and ACK (bridge start)."""
 
-    voice_client: voice_recv.VoiceRecvClient
+    voice_client: VoiceRecvClient
     guild_id: int
     channel_id: int
 
@@ -131,7 +132,7 @@ class PendingBridge:
 class DiscordBridgeContext:
     """Active Discord voice bridge state."""
 
-    voice_client: voice_recv.VoiceRecvClient
+    voice_client: VoiceRecvClient
     guild_id: int
     channel_id: int
     handle: BridgeHandle
@@ -577,7 +578,7 @@ class SipServer(asyncio.DatagramProtocol):
                 return
             try:
                 vc = await asyncio.wait_for(
-                    channel.connect(cls=voice_recv.VoiceRecvClient),
+                    channel.connect(cls=VoiceRecvClient),
                     timeout=10.0,
                 )
                 call.pending_bridge = PendingBridge(

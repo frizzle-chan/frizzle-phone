@@ -18,7 +18,6 @@ def test_bridge_handle_stop_sets_event():
         send_task=MagicMock(),
         rtp_transport=MagicMock(),
         voice_client=MagicMock(),
-        sink=MagicMock(),
     )
     handle.stop()
     assert handle._stop_event.is_set()
@@ -31,7 +30,6 @@ def test_bridge_handle_stop_cancels_task():
         send_task=task,
         rtp_transport=MagicMock(),
         voice_client=MagicMock(),
-        sink=MagicMock(),
     )
     handle.stop()
     task.cancel.assert_called_once()
@@ -44,7 +42,6 @@ def test_bridge_handle_stop_closes_transport():
         send_task=MagicMock(),
         rtp_transport=transport,
         voice_client=MagicMock(),
-        sink=MagicMock(),
     )
     handle.stop()
     transport.close.assert_called_once()
@@ -57,23 +54,21 @@ def test_bridge_handle_stop_calls_voice_client_stop():
         send_task=MagicMock(),
         rtp_transport=MagicMock(),
         voice_client=vc,
-        sink=MagicMock(),
     )
     handle.stop()
     vc.stop.assert_called_once()
 
 
-def test_bridge_handle_stop_calls_sink_cleanup():
-    sink = MagicMock()
+def test_bridge_handle_stop_calls_stop_listening():
+    vc = MagicMock()
     handle = BridgeHandle(
         stop_event=asyncio.Event(),
         send_task=MagicMock(),
         rtp_transport=MagicMock(),
-        voice_client=MagicMock(),
-        sink=sink,
+        voice_client=vc,
     )
     handle.stop()
-    sink.cleanup.assert_called_once()
+    vc.stop_listening.assert_called_once()
 
 
 def test_bridge_handle_stop_idempotent():
@@ -83,7 +78,6 @@ def test_bridge_handle_stop_idempotent():
         send_task=MagicMock(),
         rtp_transport=MagicMock(),
         voice_client=MagicMock(),
-        sink=MagicMock(),
     )
     handle.stop()
     handle.stop()  # no error
@@ -112,7 +106,7 @@ async def test_start_returns_handle():
 
     assert isinstance(handle, BridgeHandle)
     vc.play.assert_called_once()
-    vc.listen.assert_called_once()
+    vc.start_listening.assert_called_once()
 
 
 @pytest.mark.asyncio

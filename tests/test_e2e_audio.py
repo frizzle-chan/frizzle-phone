@@ -1,15 +1,14 @@
-"""End-to-end audio pipeline test: DAVE decrypt → opus decode → sink → RTP → UDP."""
+"""End-to-end audio pipeline test: opus encode → decode → pop_tick → RTP → UDP."""
 
 import asyncio
 from functools import partial
-from unittest.mock import MagicMock, patch
 
 import discord.opus
 import numpy as np
 import pytest
 
-from frizzle_phone.bridge import PhoneAudioSink, rtp_send_loop, stereo_to_mono
-from frizzle_phone.discord_patches import _patched_callback
+from frizzle_phone.audio_utils import stereo_to_mono
+from frizzle_phone.bridge import rtp_send_loop
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 from tests.audio_helpers import (
     FIXTURES,
@@ -17,11 +16,6 @@ from tests.audio_helpers import (
     resample_to_48k_frames,
     wav_samples_check,
 )
-
-
-def _xor_bytes(data: bytes, key: int = 0xAA) -> bytes:
-    """Single-byte XOR transform."""
-    return bytes(b ^ key for b in data)
 
 
 def _parse_rtp_payload(data: bytes) -> bytes:
@@ -39,79 +33,40 @@ class _RtpCollector(asyncio.DatagramProtocol):
         self.packets.append(data)
 
 
-class _PacedSink(PhoneAudioSink):
-    """Sink that releases pre-computed frames one per drain() call.
-
-    Used in e2e tests to provide deterministic pacing without
-    depending on async timing between feeder and send loop.
-    """
+class _PacedPopper:
+    """Returns pre-computed frames one per call (like pop_tick)."""
 
     def __init__(self, frames: list[tuple[int, np.ndarray]]) -> None:
-        super().__init__()
-        self._test_frames = frames
-        self._test_idx = 0
+        self._frames = frames
+        self._idx = 0
 
-    def drain(self) -> list[tuple[int, np.ndarray]]:
-        if self._test_idx < len(self._test_frames):
-            frame = self._test_frames[self._test_idx]
-            self._test_idx += 1
-            return [frame]
-        return []
+    def __call__(self) -> dict[int, np.ndarray]:
+        if self._idx < len(self._frames):
+            uid, mono = self._frames[self._idx]
+            self._idx += 1
+            return {uid: mono}
+        return {}
 
 
 @pytest.mark.asyncio
 async def test_dave_to_rtp_e2e(file_regression):
-    """Full E2E: DAVE decrypt → opus decode → sink → RTP/UDP → golden file."""
+    """Full E2E: opus encode → decode → paced popper → RTP/UDP → golden file."""
     # Step 1 — Prepare audio frames
     frames = resample_to_48k_frames(FIXTURES / "speech_sample.wav")
 
-    # Step 2 — Opus encode + XOR encrypt
+    # Step 2 — Opus encode → decode → mono
     encoder = discord.opus.Encoder()
-    xor_key = 0xAA
-    opus_packets = []
+    decoder = discord.opus.Decoder()
+    user_id = 42
+
+    mono_frames: list[tuple[int, np.ndarray]] = []
     for pcm_frame in frames:
         opus_data = encoder.encode(pcm_frame, 960)
-        encrypted = _xor_bytes(opus_data, xor_key)
-        opus_packets.append((opus_data, encrypted))
+        decoded_pcm = decoder.decode(opus_data, fec=False)
+        mono_frames.append((user_id, stereo_to_mono(decoded_pcm)))
 
-    # Step 3 — Feed through _patched_callback with mocked reader
-    ssrc, user_id = 12345, 42
-
-    reader = MagicMock()
-    reader.error = None
-    reader._last_callback_rtp = 0.0
-    reader.voice_client._ssrc_to_id = {ssrc: user_id}
-
-    dave_mock = MagicMock()
-    dave_mock.ready = True
-    dave_mock.decrypt.side_effect = lambda uid, _mt, data: _xor_bytes(data, xor_key)
-    reader.voice_client._connection.dave_session = dave_mock
-
-    mock_packet = MagicMock()
-    mock_packet.ssrc = ssrc
-    mock_packet.is_silence.return_value = False
-
-    decoded_pcm_frames = []
-    decoder = discord.opus.Decoder()
-
-    with patch("frizzle_phone.discord_patches.rtp") as mock_rtp:
-        mock_rtp.is_rtcp.return_value = False
-        mock_rtp.decode_rtp.return_value = mock_packet
-
-        for original_opus, encrypted_opus in opus_packets:
-            reader.decryptor.decrypt_rtp.return_value = encrypted_opus
-
-            _patched_callback(reader, b"\x00" * 20)
-
-            assert mock_packet.decrypted_data == original_opus
-            pcm = decoder.decode(mock_packet.decrypted_data, fec=False)
-            decoded_pcm_frames.append(pcm)
-
-    # Step 4 — Convert decoded stereo PCM to (user_key, mono) tuples
-    mono_frames = [(user_id, stereo_to_mono(pcm)) for pcm in decoded_pcm_frames]
-
-    # Step 5 — Send over real UDP via rtp_send_loop with paced sink
-    sink = _PacedSink(mono_frames)
+    # Step 3 — Send over real UDP via rtp_send_loop with paced popper
+    popper = _PacedPopper(mono_frames)
 
     loop = asyncio.get_running_loop()
     collector = _RtpCollector()
@@ -128,7 +83,7 @@ async def test_dave_to_rtp_e2e(file_regression):
 
     task = asyncio.create_task(
         rtp_send_loop(
-            sink,
+            popper,
             send_transport,
             ("127.0.0.1", recv_port),
             stop_event=stop_event,
@@ -151,7 +106,7 @@ async def test_dave_to_rtp_e2e(file_regression):
         f"Only received {len(collector.packets)}/{expected_count} packets"
     )
 
-    # Step 6 — Collect, decode, compare
+    # Step 4 — Collect, decode, compare
     received_ulaw = b""
     for pkt in collector.packets[:expected_count]:
         received_ulaw += _parse_rtp_payload(pkt)

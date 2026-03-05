@@ -1,11 +1,10 @@
 """Golden-file test for Discord→Phone audio pipeline."""
 
-from unittest.mock import MagicMock
-
 import numpy as np
 
 from frizzle_phone.agc import AgcBank
-from frizzle_phone.bridge import PhoneAudioSink, _new_resampler, mix_slot
+from frizzle_phone.audio_utils import stereo_to_mono
+from frizzle_phone.bridge import _new_resampler, mix_slot
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw, ulaw_to_pcm
 from tests.audio_helpers import (
     FIXTURES,
@@ -15,52 +14,34 @@ from tests.audio_helpers import (
 )
 
 
-def _run_sink(
+def _run_pipeline(
     speaker_frames: dict[int, list[bytes]],
     *,
     agc_bank: AgcBank | None = None,
 ) -> bytes:
-    """Feed speaker frames through PhoneAudioSink, return output WAV bytes.
+    """Feed speaker stereo frames through mix/resample pipeline.
+
+    Returns output WAV bytes.
 
     speaker_frames maps user_id → list of 20ms stereo frame bytes.
-    Speakers are interleaved within each 20ms batch, then drained and
-    mixed (replicating rtp_send_loop's per-tick logic).
+    Speakers are interleaved within each 20ms batch and mixed per tick
+    (replicating rtp_send_loop's per-tick logic).
     """
-    sink = PhoneAudioSink()
     resampler = _new_resampler()
-
-    users = {}
-    for uid in speaker_frames:
-        u = MagicMock()
-        u.id = uid
-        users[uid] = u
 
     max_frames = max(len(f) for f in speaker_frames.values())
     ulaw_payloads = []
 
     for i in range(max_frames):
+        # Build slot directly: convert stereo → mono for each active speaker
+        slot: dict[int, np.ndarray] = {}
         for uid, frames in speaker_frames.items():
             if i < len(frames):
-                data = MagicMock()
-                data.pcm = frames[i]
-                sink.write(users[uid], data)
+                slot[uid] = stereo_to_mono(frames[i])
 
-        raw_frames = sink.drain()
-        if not raw_frames:
+        if not slot:
             continue
 
-        # Slot grouping (same algorithm as rtp_send_loop)
-        slots: list[dict[int, np.ndarray]] = []
-        current_slot: dict[int, np.ndarray] = {}
-        for user_key, mono in raw_frames:
-            if user_key in current_slot:
-                slots.append(current_slot)
-                current_slot = {}
-            current_slot[user_key] = mono
-        if current_slot:
-            slots.append(current_slot)
-
-        slot = slots[-1]
         if agc_bank is not None:
             slot = agc_bank.process_slot(slot)
         mixed = mix_slot(slot)
@@ -105,7 +86,7 @@ def _scale_frames(frames: list[bytes], target_dbfs: float) -> list[bytes]:
 def test_discord_to_phone_pipeline(file_regression):
     """Feed speech WAV through Discord→Phone pipeline, regression-check output."""
     frames = resample_to_48k_frames(FIXTURES / "speech_sample.wav")
-    wav_bytes = _run_sink({1: frames})
+    wav_bytes = _run_pipeline({1: frames})
     file_regression.check(
         wav_bytes, binary=True, extension=".wav", check_fn=wav_samples_check
     )
@@ -115,7 +96,7 @@ def test_discord_to_phone_two_speakers(file_regression):
     """Mix two speakers through the pipeline, regression-check output."""
     frames_a = resample_to_48k_frames(FIXTURES / "speech_sample.wav")
     frames_b = resample_to_48k_frames(FIXTURES / "speech_sample_2.wav")
-    wav_bytes = _run_sink({1: frames_a, 2: frames_b})
+    wav_bytes = _run_pipeline({1: frames_a, 2: frames_b})
     file_regression.check(
         wav_bytes, binary=True, extension=".wav", check_fn=wav_samples_check
     )
@@ -162,7 +143,7 @@ def test_agc_mixed_loudness(file_regression):
     agc_bank = AgcBank()
     all_wav_parts = []
     for segment in [seg1, seg2, seg3, seg4]:
-        wav_bytes = _run_sink(segment, agc_bank=agc_bank)
+        wav_bytes = _run_pipeline(segment, agc_bank=agc_bank)
         all_wav_parts.append(wav_bytes)
 
     # Concatenate the raw PCM from each WAV segment with 0.5s silence gaps

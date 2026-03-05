@@ -1,8 +1,8 @@
 import logging
 import queue
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from frizzle_phone.bridge import PhoneAudioSink, PhoneAudioSource
+from frizzle_phone.bridge import PhoneAudioSource
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.receive import RtpReceiveProtocol
 from tests.conftest import build_rtp_packet
@@ -154,24 +154,6 @@ def test_reset_clears_gap_warnings():
     stats.reset()
     assert stats._d2p_gap_warnings == 0
     assert stats._p2d_gap_warnings == 0
-
-
-# ---------------------------------------------------------------------------
-# Integration: PhoneAudioSink with stats
-# ---------------------------------------------------------------------------
-
-
-def test_sink_write_increments_d2p_frames_in():
-    stats = BridgeStats()
-    sink = PhoneAudioSink(stats=stats)
-
-    user = MagicMock()
-    user.id = 1
-    data = MagicMock()
-    data.pcm = b"\x00" * 3840
-
-    sink.write(user, data)
-    assert stats.d2p_frames_in == 1
 
 
 # ---------------------------------------------------------------------------

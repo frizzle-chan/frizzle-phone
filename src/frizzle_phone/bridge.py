@@ -10,17 +10,15 @@ import asyncio
 import logging
 import queue
 import random
-import threading
 import time
 from collections import deque
+from collections.abc import Callable
 
 import discord
 import numpy as np
 import soxr
-from discord.ext import voice_recv
 
 from frizzle_phone.agc import AgcBank
-from frizzle_phone.audio_utils import stereo_to_mono as stereo_to_mono
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp import pcmu
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw
@@ -75,42 +73,6 @@ class PhoneAudioSource(discord.AudioSource):
 
     def cleanup(self) -> None:
         self._stopped = True
-
-
-class PhoneAudioSink(voice_recv.AudioSink):
-    """Receives Discord voice and accumulates raw mono frames for mixing.
-
-    The rtp_send_loop drains accumulated frames each 20ms tick and performs
-    slot-based mixing, resampling, and RTP encoding — keeping mixing on a
-    strict cadence instead of the bursty write() thread.
-    """
-
-    def __init__(self, *, stats: BridgeStats | None = None) -> None:
-        super().__init__()
-        self._lock = threading.Lock()
-        self._buf: list[tuple[int, np.ndarray]] = []
-        self._stats = stats
-
-    def wants_opus(self) -> bool:
-        return False
-
-    def drain(self) -> list[tuple[int, np.ndarray]]:
-        """Swap out accumulated frames (thread-safe). Returns the old buffer."""
-        with self._lock:
-            frames = self._buf
-            self._buf = []
-        return frames
-
-    def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
-        if self._stats:
-            self._stats.record_d2p_write()
-        user_key = user.id if user is not None else 0
-        mono = stereo_to_mono(data.pcm)
-        with self._lock:
-            self._buf.append((user_key, mono))
-
-    def cleanup(self) -> None:
-        self.drain()  # discard remaining frames
 
 
 class ChunkedResampler:
@@ -171,14 +133,14 @@ def _new_resampler() -> ChunkedResampler:
 
 
 async def rtp_send_loop(
-    sink: PhoneAudioSink,
+    pop_tick: Callable[[], dict[int, np.ndarray]],
     transport: asyncio.DatagramTransport,
     remote_addr: tuple[str, int],
     *,
     stop_event: asyncio.Event,
     stats: BridgeStats | None = None,
 ) -> None:
-    """Drain sink, mix, resample, and send RTP packets at 20ms intervals."""
+    """Pull frames via pop_tick, mix, resample, send RTP at 20ms intervals."""
     ssrc = random.randint(0, 0xFFFFFFFF)
     seq = random.randint(0, 0xFFFF)
     timestamp = random.randint(0, 0xFFFFFFFF)
@@ -192,19 +154,10 @@ async def rtp_send_loop(
     payload_queue: deque[bytes] = deque()
 
     while not stop_event.is_set():
-        # 1. Drain new frames into slots
-        frames = sink.drain()
-        if frames:
-            current_slot: dict[int, np.ndarray] = {}
-            for user_key, mono in frames:
-                if user_key in current_slot:
-                    slot_queue.append(current_slot)
-                    current_slot = {}
-                current_slot[user_key] = mono
-            if current_slot:
-                slot_queue.append(current_slot)
-
-            # Cap queue — drop oldest if overflowing
+        # 1. Pull one tick of per-user frames
+        tick = pop_tick()
+        if tick:
+            slot_queue.append(tick)
             while len(slot_queue) > MAX_SLOT_QUEUE:
                 slot_queue.popleft()
                 if stats:
