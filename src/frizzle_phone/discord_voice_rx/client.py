@@ -80,9 +80,7 @@ class VoiceRecvClient(discord.VoiceClient):
 
     def stop(self) -> None:
         """Stop playing and receiving audio."""
-        if self._player:
-            self._player.stop()
-            self._player = None
+        super().stop()
         self.stop_listening()
 
     def pop_tick(self) -> dict[int, np.ndarray]:
@@ -128,8 +126,8 @@ class VoiceRecvClient(discord.VoiceClient):
             if elapsed_us > self._recv_stats.max_callback_us:
                 self._recv_stats.max_callback_us = elapsed_us
 
-        # Filter unknown SSRCs with silence
-        if packet.ssrc not in self._ssrc_to_id and packet.is_silence():
+        # Filter unknown SSRCs — decoder thread drops them anyway
+        if packet.ssrc not in self._ssrc_to_id:
             return
 
         if self._decoder_thread is not None:

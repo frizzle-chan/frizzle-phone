@@ -53,9 +53,6 @@ class JitterBuffer:
         self._last_seq = pkt.sequence
         return pkt
 
-    def peek_next(self) -> _PacketCmpMixin | None:
-        return self._heap[0] if self._heap else None
-
     def gap(self) -> int:
         """Return the sequence gap between last popped and next buffered packet."""
         if self._heap and self._last_seq >= 0:
@@ -177,19 +174,12 @@ class DecoderThread(threading.Thread):
                         decoder = OpusDecoder()
                         self._decoders[ssrc] = decoder
 
-                    opus_data = getattr(ready, "decrypted_data", None)
+                    opus_data = ready.decrypted_data
                     if opus_data is None:
-                        # FakePacket — decode with packet loss concealment
+                        # No payload — decode with packet loss concealment
                         pcm = decoder.decode(None, fec=False)
                     else:
-                        # Check if next packet is available for FEC
-                        next_pkt = jbuf.peek_next()
-                        next_data = getattr(next_pkt, "decrypted_data", None)
-                        if not ready and next_data is not None:
-                            # FakePacket with next available — use FEC
-                            pcm = decoder.decode(next_data, fec=True)
-                        else:
-                            pcm = decoder.decode(opus_data, fec=False)
+                        pcm = decoder.decode(opus_data, fec=False)
 
                     self._stats.opus_decodes += 1
                 except Exception:

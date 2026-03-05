@@ -38,7 +38,7 @@ class _PacketCmpMixin:
     def __gt__(self, other: _PacketCmpMixin) -> bool:
         if self.ssrc != other.ssrc:
             raise TypeError(f"packet ssrc mismatch ({self.ssrc}, {other.ssrc})")
-        return self.sequence > other.sequence or self.timestamp > other.timestamp
+        return self.sequence > other.sequence and self.timestamp > other.timestamp
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _PacketCmpMixin):
@@ -188,7 +188,7 @@ class FakePacket(_PacketCmpMixin):
 
     __slots__ = ("ssrc", "sequence", "timestamp")
     decrypted_data: bytes = b""
-    extension_data: dict[int, bytes] = {}
+    extension_data: dict[int, bytes] = {}  # noqa: RUF012 — immutable in practice (never mutated)
 
     def __init__(self, ssrc: int, sequence: int, timestamp: int) -> None:
         self.ssrc: int = ssrc

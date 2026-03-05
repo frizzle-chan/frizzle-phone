@@ -23,8 +23,6 @@ class TestJitterBuffer:
         pkt.__lt__ = lambda s, o: s.sequence < o.sequence
         pkt.__gt__ = lambda s, o: s.sequence > o.sequence
         pkt.__eq__ = lambda s, o: s.sequence == o.sequence
-        pkt.__le__ = lambda s, o: s.sequence <= o.sequence
-        pkt.__ge__ = lambda s, o: s.sequence >= o.sequence
         pkt.__bool__ = lambda s: True  # real packet, not fake
         return pkt
 
