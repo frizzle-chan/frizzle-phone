@@ -17,7 +17,7 @@ SPEAKING = 5
 CLIENT_DISCONNECT = 13
 
 
-async def hook(ws, msg: dict[str, Any]) -> None:  # type: ignore[type-arg]
+async def hook(ws, msg: dict[str, Any]) -> None:
     """Process voice websocket messages for SSRC tracking."""
     op: int = msg["op"]
     data: dict[str, Any] = msg.get("d", {})
