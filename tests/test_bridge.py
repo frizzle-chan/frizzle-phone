@@ -7,6 +7,7 @@ from frizzle_phone.bridge import (
     SILENCE_FRAME,
     PhoneAudioSink,
     PhoneAudioSource,
+    mix_slot,
     stereo_to_mono,
 )
 from frizzle_phone.bridge_stats import BridgeStats
@@ -130,10 +131,7 @@ def test_phone_audio_sink_drain_five_speakers_one_slot():
     assert len(slots[0]) == 5
 
     # Mix with gain reduction produces valid ulaw
-    slot = slots[0]
-    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
-    gain = 1.0 / np.sqrt(len(slot))
-    mixed = np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(np.int16)
+    mixed = mix_slot(slots[0])
     resampler = _new_resampler()
     # Feed multiple frames to prime the sinc filter — LQ needs a few
     # input chunks before producing output.
@@ -198,112 +196,63 @@ def test_phone_audio_sink_cleanup_drains():
 # ---------------------------------------------------------------------------
 
 
-def test_mixer_single_speaker_no_gain_reduction():
+def test_mix_slot_single_speaker():
     """Single speaker fast path returns audio unchanged."""
     samples = np.full(960, 32767, dtype=np.int16)
-    slot = {1: samples}
-    # Single-speaker path
-    mixed = next(iter(slot.values()))
-    np.testing.assert_array_equal(mixed, samples)
+    np.testing.assert_array_equal(mix_slot({1: samples}), samples)
 
 
-def test_mixer_two_speakers_gain_reduced():
-    """Two full-volume speakers should be reduced by 1/sqrt(2), not hard-clipped."""
-    full_vol = np.full(960, 32767, dtype=np.int16)
-    slot = {1: full_vol, 2: full_vol}
-
-    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
-    gain = 1.0 / np.sqrt(len(slot))
-    mixed = np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(np.int16)
-
-    # At full volume both speakers still clip (46340 > 32767)
-    assert mixed[0] == 32767
-
-
-def test_mixer_two_speakers_moderate_no_clip():
+def test_mix_slot_two_speakers_moderate_no_clip():
     """Two moderate-volume speakers should not clip with gain reduction."""
     moderate = np.full(960, 20000, dtype=np.int16)
-    slot = {1: moderate, 2: moderate}
-
-    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
-    gain = 1.0 / np.sqrt(len(slot))
-    mixed = np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(np.int16)
+    mixed = mix_slot({1: moderate, 2: moderate})
 
     # 20000 * 2 / sqrt(2) ≈ 28284 — no clipping
-    expected = int(20000 * 2 * gain)
-    assert mixed[0] == expected
-    assert all(mixed == expected)
+    expected = int(20000 * 2 / np.sqrt(2))
+    np.testing.assert_array_equal(mixed, expected)
 
 
-def test_mixer_three_speakers_gain():
+def test_mix_slot_three_speakers_gain():
     """Three speakers get 1/sqrt(3) gain reduction."""
-    val = 16000
-    samples = np.full(960, val, dtype=np.int16)
-    slot = {1: samples, 2: samples, 3: samples}
-
-    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
-    gain = 1.0 / np.sqrt(len(slot))
-    mixed = np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(np.int16)
+    samples = np.full(960, 16000, dtype=np.int16)
+    mixed = mix_slot({1: samples, 2: samples, 3: samples})
 
     # 16000 * 3 / sqrt(3) ≈ 27713
-    expected = int(val * 3 * gain)
+    expected = int(16000 * 3 / np.sqrt(3))
     assert mixed[0] == expected
 
 
-def test_mixer_gain_vs_hard_clip():
+def test_mix_slot_gain_vs_hard_clip():
     """Gain reduction produces different output than hard clipping.
 
     Two full-volume sine waves sum to 2x amplitude. Hard clipping
     flat-tops at ±32767; 1/sqrt(2) gain preserves the waveform.
     """
-    n = 960
-    t = np.arange(n, dtype=np.float64) / 48000
-    tone_a = (32767 * np.sin(2 * np.pi * 440 * t)).astype(np.int16)
-    tone_b = (32767 * np.sin(2 * np.pi * 440 * t)).astype(np.int16)
-    slot = {1: tone_a, 2: tone_b}
+    t = np.arange(960, dtype=np.float64) / 48000
+    tone = (32767 * np.sin(2 * np.pi * 440 * t)).astype(np.int16)
 
-    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
-
-    # Old behavior: hard clip only
+    summed = np.sum([tone, tone], axis=0, dtype=np.int32)
     hard_clipped = np.clip(summed, -32768, 32767).astype(np.int16)
 
-    # New behavior: gain reduce then clip
-    gain = 1.0 / np.sqrt(len(slot))
-    gain_reduced = np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(
-        np.int16
-    )
+    gain_reduced = mix_slot({1: tone, 2: tone})
 
     # Hard clipping produces flat-topped waveforms (many samples at ±32767)
     clipped_count = int(np.sum(np.abs(hard_clipped) == 32767))
-    # Gain-reduced version should have far fewer clipped samples
     gain_clipped_count = int(np.sum(np.abs(gain_reduced) == 32767))
 
-    assert clipped_count > 100, f"Expected significant clipping, got {clipped_count}"
-    assert gain_clipped_count < clipped_count, (
-        f"Gain should reduce clipping: {gain_clipped_count} >= {clipped_count}"
-    )
-
-    # The outputs must differ — this IS the fix
+    assert clipped_count > 100
+    assert gain_clipped_count < clipped_count
     assert not np.array_equal(hard_clipped, gain_reduced)
 
-    # Peak of gain-reduced should be lower than hard-clipped in the non-peak region
-    # (where hard_clipped is flat at ±32767 but gain_reduced preserves shape)
     rms_hard = float(np.sqrt(np.mean(hard_clipped.astype(np.float64) ** 2)))
     rms_gain = float(np.sqrt(np.mean(gain_reduced.astype(np.float64) ** 2)))
-    assert rms_gain < rms_hard, (
-        f"Gain-reduced RMS ({rms_gain:.0f}) should be "
-        f"lower than hard-clipped ({rms_hard:.0f})"
-    )
+    assert rms_gain < rms_hard
 
 
-def test_mixer_two_speakers_negative_no_underflow():
+def test_mix_slot_negative_no_underflow():
     """Negative full-volume samples should be gain-reduced symmetrically."""
     neg_full = np.full(960, -32768, dtype=np.int16)
-    slot = {1: neg_full, 2: neg_full}
-
-    summed = np.sum(list(slot.values()), axis=0, dtype=np.int32)
-    gain = 1.0 / np.sqrt(len(slot))
-    mixed = np.clip((summed * gain).astype(np.int32), -32768, 32767).astype(np.int16)
+    mixed = mix_slot({1: neg_full, 2: neg_full})
 
     # -32768 * 2 / sqrt(2) ≈ -46341 → clipped to -32768
     assert mixed[0] == -32768
