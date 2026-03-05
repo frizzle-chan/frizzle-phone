@@ -209,11 +209,15 @@ async def rtp_send_loop(
         if stats:
             stats.d2p_queue_depth = max(stats.d2p_queue_depth, len(slot_queue))
 
-        # 2. Feed slots to resampler until we have a payload or run out
+        # 2. Consume one slot per tick — matches the 1-packet-per-tick send
+        #    cadence so slot_queue drains at the same rate it fills.  The old
+        #    `while not payload_queue` loop starved consumption whenever the
+        #    LQ resampler emitted >1 chunk, causing unbounded queue growth.
         fed_this_tick = False
-        while slot_queue and not payload_queue:
+        if slot_queue:
             slot = slot_queue.popleft()
             fed_this_tick = True
+            was_silent = False
 
             if stats:
                 stats.d2p_frames_mixed += 1
@@ -228,9 +232,6 @@ async def rtp_send_loop(
 
             for chunk_8k in resampler.feed(mixed):
                 payload_queue.append(pcm16_arr_to_ulaw(chunk_8k))
-
-        if fed_this_tick:
-            was_silent = False
 
         # 3. Send one payload or silence
         if payload_queue:
