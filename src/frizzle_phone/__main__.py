@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 
 import aiosqlite
+import discord
 from dotenv import load_dotenv
 
 from frizzle_phone.bot import create_bot
@@ -72,6 +73,17 @@ async def main() -> None:
         await bot.login(discord_token)
         bot_task = asyncio.create_task(bot.connect())
         await bot.wait_until_ready()
+
+        # Disconnect stale voice clients from previous run — the gateway may
+        # restore them on reconnect even though we have no matching SIP call.
+        for vc in list(bot.voice_clients):
+            if isinstance(vc, discord.VoiceClient):
+                logger.warning(
+                    "Disconnecting stale voice client: guild=%s channel=%s",
+                    vc.guild.id if vc.guild else None,
+                    vc.channel.id if vc.channel else None,
+                )
+            await vc.disconnect(force=True)
     else:
         bot_task = None
 
