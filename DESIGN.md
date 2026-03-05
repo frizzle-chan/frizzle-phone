@@ -161,33 +161,33 @@ Both directions use `soxr.LQ` (sinc-based, ~96dB stopband[^stopband] rejection) 
 
 **Why `ChunkedResampler`:** Sinc-based soxr modes (`LQ`+) buffer internally and emit samples in variable-size bursts rather than a steady 1:ratio output. `ChunkedResampler` accumulates resampler output and yields exactly the expected frame size (160 samples at 8kHz for d2p, 960 samples at 48kHz for p2d) so the rest of the pipeline sees a consistent chunk per feed.
 
-[^agc]: AGC, [Automatic gain control](https://en.wikipedia.org/wiki/Automatic_gain_control) — normalizes audio levels per speaker
-[^aiohttp]: [aiohttp](https://docs.aiohttp.org/en/stable/) — async HTTP server/client framework for Python
-[^aiosqlite]: [aiosqlite](https://pypi.org/project/aiosqlite/) — async wrapper for Python's sqlite3
-[^aliasing]: [Aliasing](https://en.wikipedia.org/wiki/Aliasing) — distortion from undersampled high-frequency content
-[^antialiasing]: [Anti-aliasing filter](https://en.wikipedia.org/wiki/Anti-aliasing_filter) — removes frequencies above Nyquist before downsampling
-[^asyncio]: [asyncio](https://docs.python.org/3/library/asyncio.html) — Python's async I/O framework
-[^dave]: [DAVE](https://daveprotocol.com/) — Discord's end-to-end encryption protocol for voice
-[^dbfs]: [dBFS](https://en.wikipedia.org/wiki/DBFS) — decibels relative to digital full scale
-[^discordpy]: [discord.py](https://discordpy.readthedocs.io/en/stable/) — Python wrapper for the Discord API
-[^fir]: FIR, [Finite impulse response](https://en.wikipedia.org/wiki/Finite_impulse_response) — filter type with fixed-length kernel
-[^g711]: [G.711](https://en.wikipedia.org/wiki/G.711) — ITU-T standard for 8kHz logarithmic PCM audio
-[^g712]: [G.712](https://www.itu.int/rec/T-REC-G.712-200111-I/en) — ITU-T spec for telephony passband (0–3.4kHz)
-[^groupdelay]: [Group delay](https://en.wikipedia.org/wiki/Group_delay_and_phase_delay) — time delay introduced by a filter
-[^jitter]: [Jitter buffer](https://en.wikipedia.org/wiki/Jitter#Jitter_buffers) — reorders and smooths bursty packet arrivals
-[^mulaw]: [μ-law algorithm](https://en.wikipedia.org/wiki/%CE%9C-law_algorithm) — logarithmic companding for G.711
-[^nacl]: [NaCl](https://nacl.cr.yp.to/) — networking and cryptography library for voice packet encryption
-[^noisegate]: [Noise gate](https://en.wikipedia.org/wiki/Noise_gate) — silences signal below a threshold
-[^opus]: [Opus](https://en.wikipedia.org/wiki/Opus_(audio_format)) — low-latency audio codec used by Discord
-[^rfc3261]: [RFC 3261](https://datatracker.ietf.org/doc/html/rfc3261) — core SIP specification
-[^rms]: RMS, [Root mean square](https://en.wikipedia.org/wiki/Root_mean_square) — measure of signal amplitude
-[^rtp]: RTP, [Real-time Transport Protocol](https://en.wikipedia.org/wiki/Real-time_Transport_Protocol) — carries audio/video over UDP
-[^sdp]: SDP, [Session Description Protocol](https://en.wikipedia.org/wiki/Session_Description_Protocol) — carries codec and transport parameters in INVITE/200 OK
-[^sinc]: [Whittaker–Shannon interpolation](https://en.wikipedia.org/wiki/Whittaker%E2%80%93Shannon_interpolation_formula) — ideal reconstruction basis for resampling
-[^sip]: SIP, [Session Initiation Protocol](https://en.wikipedia.org/wiki/Session_Initiation_Protocol) — signaling protocol for voice/video calls
-[^softlimiter]: [Limiter](https://en.wikipedia.org/wiki/Limiter) — prevents clipping by compressing peaks
-[^soxr]: [soxr](https://sourceforge.net/projects/soxr/) — high-quality sample rate conversion library
-[^sqlite]: [SQLite](https://en.wikipedia.org/wiki/SQLite) — embedded relational database
-[^ssrc]: SSRC, [Synchronization source](https://en.wikipedia.org/wiki/Real-time_Transport_Protocol#Packet_header) — identifier in the RTP header, one per speaker
-[^stopband]: [Stopband](https://en.wikipedia.org/wiki/Stopband) — frequency range attenuated by a filter
-[^udp]: UDP, [User Datagram Protocol](https://en.wikipedia.org/wiki/User_Datagram_Protocol) — connectionless transport protocol
+[^agc]: AGC, [Automatic gain control](https://en.wikipedia.org/wiki/Automatic_gain_control): normalizes audio levels per speaker
+[^aiohttp]: [aiohttp](https://docs.aiohttp.org/en/stable/): async HTTP server/client framework for Python
+[^aiosqlite]: [aiosqlite](https://pypi.org/project/aiosqlite/): async wrapper for Python's sqlite3
+[^aliasing]: [Aliasing](https://en.wikipedia.org/wiki/Aliasing): distortion from undersampled high-frequency content
+[^antialiasing]: [Anti-aliasing filter](https://en.wikipedia.org/wiki/Anti-aliasing_filter): removes frequencies above Nyquist before downsampling
+[^asyncio]: [asyncio](https://docs.python.org/3/library/asyncio.html): Python's async I/O framework
+[^dave]: [DAVE](https://daveprotocol.com/): Discord's end-to-end encryption protocol for voice
+[^dbfs]: [dBFS](https://en.wikipedia.org/wiki/DBFS): decibels relative to digital full scale
+[^discordpy]: [discord.py](https://discordpy.readthedocs.io/en/stable/): Python wrapper for the Discord API
+[^fir]: FIR, [Finite impulse response](https://en.wikipedia.org/wiki/Finite_impulse_response): filter type with fixed-length kernel
+[^g711]: [G.711](https://en.wikipedia.org/wiki/G.711): ITU-T standard for 8kHz logarithmic PCM audio
+[^g712]: [G.712](https://www.itu.int/rec/T-REC-G.712-200111-I/en): ITU-T spec for telephony passband (0–3.4kHz)
+[^groupdelay]: [Group delay](https://en.wikipedia.org/wiki/Group_delay_and_phase_delay): time delay introduced by a filter
+[^jitter]: [Jitter buffer](https://en.wikipedia.org/wiki/Jitter#Jitter_buffers): reorders and smooths bursty packet arrivals
+[^mulaw]: [μ-law algorithm](https://en.wikipedia.org/wiki/%CE%9C-law_algorithm): logarithmic companding for G.711
+[^nacl]: [NaCl](https://nacl.cr.yp.to/): networking and cryptography library for voice packet encryption
+[^noisegate]: [Noise gate](https://en.wikipedia.org/wiki/Noise_gate): silences signal below a threshold
+[^opus]: [Opus](https://en.wikipedia.org/wiki/Opus_(audio_format)): low-latency audio codec used by Discord
+[^rfc3261]: [RFC 3261](https://datatracker.ietf.org/doc/html/rfc3261): core SIP specification
+[^rms]: RMS, [Root mean square](https://en.wikipedia.org/wiki/Root_mean_square): measure of signal amplitude
+[^rtp]: RTP, [Real-time Transport Protocol](https://en.wikipedia.org/wiki/Real-time_Transport_Protocol): carries audio/video over UDP
+[^sdp]: SDP, [Session Description Protocol](https://en.wikipedia.org/wiki/Session_Description_Protocol): carries codec and transport parameters in INVITE/200 OK
+[^sinc]: [Sinc function](https://en.wikipedia.org/wiki/Sinc_function): windowed sinc is the interpolation kernel used by soxr for resampling
+[^sip]: SIP, [Session Initiation Protocol](https://en.wikipedia.org/wiki/Session_Initiation_Protocol): signaling protocol for voice/video calls
+[^softlimiter]: [Limiter](https://en.wikipedia.org/wiki/Limiter): prevents clipping by compressing peaks
+[^soxr]: [soxr](https://sourceforge.net/projects/soxr/): high-quality sample rate conversion library
+[^sqlite]: [SQLite](https://en.wikipedia.org/wiki/SQLite): embedded relational database
+[^ssrc]: SSRC, [Synchronization source](https://en.wikipedia.org/wiki/Real-time_Transport_Protocol#Packet_header): identifier in the RTP header, one per speaker
+[^stopband]: [Stopband](https://en.wikipedia.org/wiki/Stopband): frequency range attenuated by a filter
+[^udp]: UDP, [User Datagram Protocol](https://en.wikipedia.org/wiki/User_Datagram_Protocol): connectionless transport protocol
