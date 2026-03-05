@@ -25,10 +25,12 @@ class FakeTransport(asyncio.DatagramTransport):
             self.sent.append((bytes(data), addr))
 
 
-def build_rtp_packet(payload: bytes, *, cc: int = 0, extension: bool = False) -> bytes:
+def build_rtp_packet(
+    payload: bytes, *, cc: int = 0, extension: bool = False, pt: int = 0
+) -> bytes:
     """Build a minimal RTP packet for testing."""
     first_byte = 0x80 | (0x10 if extension else 0) | cc  # V=2, P=0
-    header = struct.pack("!BBHII", first_byte, 0, 0, 0, 0)
+    header = struct.pack("!BBHII", first_byte, pt, 0, 0, 0)
     csrc = b"\x00\x00\x00\x00" * cc
     ext_bytes = b""
     if extension:

@@ -42,6 +42,29 @@ def test_rtp_receive_handles_extension():
     assert not q.empty()
 
 
+def test_rtp_receive_rejects_non_v2():
+    """Packets with RTP version != 2 are silently dropped."""
+    q: queue.Queue[bytes] = queue.Queue()
+    proto = RtpReceiveProtocol(q)
+    # V=1 packet (0x40 = version 1, no padding/extension/CSRC)
+    bad_packet = bytes([0x40, 0x00]) + b"\x00" * 10 + b"\xff" * 160
+    for _ in range(10):
+        proto.datagram_received(bad_packet, ("127.0.0.1", 9000))
+    assert q.empty()
+
+
+def test_rtp_receive_rejects_wrong_payload_type():
+    """Non-PCMU payload types (comfort noise, telephone-event) are dropped."""
+    q: queue.Queue[bytes] = queue.Queue()
+    proto = RtpReceiveProtocol(q)
+    payload = b"\xff" * 160
+    for pt in (13, 101):  # CN, telephone-event
+        for _ in range(10):
+            packet = build_rtp_packet(payload, pt=pt)
+            proto.datagram_received(packet, ("127.0.0.1", 9000))
+    assert q.empty()
+
+
 def test_rtp_receive_drops_oldest_on_overflow():
     """When p2d queue is full, oldest frame is dropped and new frame enqueued."""
     q: queue.Queue[bytes] = queue.Queue(maxsize=2)
