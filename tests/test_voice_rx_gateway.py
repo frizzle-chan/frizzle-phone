@@ -5,13 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from frizzle_phone.discord_voice_rx.gateway import hook
-
-# Voice WS opcode constants
-READY = 2
-SESSION_DESCRIPTION = 4
-SPEAKING = 5
-CLIENT_DISCONNECT = 13
+from frizzle_phone.discord_voice_rx.gateway import (
+    CLIENT_DISCONNECT,
+    READY,
+    SESSION_DESCRIPTION,
+    SPEAKING,
+    hook,
+)
 
 
 @pytest.fixture

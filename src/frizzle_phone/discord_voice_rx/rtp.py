@@ -160,7 +160,7 @@ class RtpPacket(_PacketCmpMixin):
                 offset += 1
                 continue
 
-            header = struct.unpack(">B", next_byte)[0]
+            header = next_byte[0]
 
             element_id = header >> 4
             element_len = 1 + (header & 0b0000_1111)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import heapq
 import logging
 import queue
@@ -89,7 +90,9 @@ class DecoderThread(threading.Thread):
     def __init__(self, *, stats: VoiceRecvStats) -> None:
         super().__init__(daemon=True, name=f"voice-rx-decoder-{id(self):x}")
         self._stats = stats
-        self._packet_queue: queue.Queue[tuple[int, RtpPacket] | None] = queue.Queue()
+        self._packet_queue: queue.Queue[tuple[int, RtpPacket] | None] = queue.Queue(
+            maxsize=500
+        )
         self._jitter_buffers: dict[int, JitterBuffer] = defaultdict(
             lambda: JitterBuffer(prefill=2, maxsize=10)
         )
@@ -102,8 +105,9 @@ class DecoderThread(threading.Thread):
         self._stop_event = threading.Event()
 
     def feed(self, ssrc: int, packet: RtpPacket) -> None:
-        """Called from socket callback thread. Pushes to packet queue."""
-        self._packet_queue.put((ssrc, packet))
+        """Called from socket callback thread. Drops if queue is full."""
+        with contextlib.suppress(queue.Full):
+            self._packet_queue.put_nowait((ssrc, packet))
 
     def set_ssrc_user(self, ssrc: int, user_id: int) -> None:
         """Update SSRC to user_id mapping."""
