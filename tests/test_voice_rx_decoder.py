@@ -22,7 +22,6 @@ class TestJitterBuffer:
         pkt.timestamp = ts
         # Make it sortable for the heap
         pkt.__lt__ = lambda s, o: s.sequence < o.sequence
-        pkt.__gt__ = lambda s, o: s.sequence > o.sequence
         pkt.__eq__ = lambda s, o: s.sequence == o.sequence
         pkt.__bool__ = lambda s: True  # real packet, not fake
         return pkt

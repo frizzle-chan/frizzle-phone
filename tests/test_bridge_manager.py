@@ -59,7 +59,8 @@ def test_bridge_handle_stop_calls_voice_client_stop():
     vc.stop.assert_called_once()
 
 
-def test_bridge_handle_stop_calls_stop_listening():
+def test_bridge_handle_stop_does_not_call_stop_listening_directly():
+    """stop_listening() is internal to voice_client.stop()."""
     vc = MagicMock()
     handle = BridgeHandle(
         stop_event=asyncio.Event(),
@@ -68,7 +69,7 @@ def test_bridge_handle_stop_calls_stop_listening():
         voice_client=vc,
     )
     handle.stop()
-    vc.stop_listening.assert_called_once()
+    vc.stop_listening.assert_not_called()
 
 
 def test_bridge_handle_stop_idempotent():

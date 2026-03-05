@@ -104,7 +104,7 @@ graph LR
     end
 ```
 
-**Slot queue:** `pop_tick()` returns one frame per active speaker (`dict[int, ndarray]`) each time the bridge's RTP send loop ticks. The slot queue buffers these multi-speaker snapshots and re-paces them to match RTP's strict 20ms timing.
+**Slot queue:** Each `pop_tick()` call returns a slot — a `dict[int, ndarray]` mapping user IDs to their mono PCM frame for that tick. The decoder thread groups frames by user internally, so each slot is already a complete multi-speaker snapshot. The slot queue buffers these and the RTP send loop pops one slot every 20ms.
 
 ```
 Single speaker says "Hi it's frizzle" (6 frames, 20ms each).
@@ -112,7 +112,7 @@ Discord delivers them in two bursts instead of evenly:
 
   burst 1: [hi] [it] ['s]       burst 2: [fri] [zz] [le]
 
-Each frame becomes one slot in the queue:
+Each pop_tick() returns one slot:
 
   queue: [hi] [it] ['s] ... [fri] [zz] [le]
 
@@ -124,22 +124,18 @@ RTP send loop pops one slot every 20ms:
 If the queue is empty when the send loop ticks, silence is sent.
 ```
 
-With multiple speakers, frames from the same 20ms tick need to be mixed together. Each user only speaks once per tick, so seeing the same user again means a new tick started. That's how slot boundaries are detected.
+With multiple speakers, `pop_tick()` returns all active speakers in a single slot:
 
 ```
-A and B speaking, then B stops — seven frames arrive in one burst:
+A and B speaking, then B stops:
 
-  buffer after drain:  [A] [B] [A] [B] [A] [A] [A]
-                                ↑       ↑   ↑   ↑
-                          each A repeat = new slot boundary
-
-  slot 1: {A, B}  →  mix(A+B)   →  RTP
-  slot 2: {A, B}  →  mix(A+B)   →  RTP
-  slot 3: {A}     →  A directly  →  RTP
-  slot 4: {A}     →  A directly  →  RTP
-  slot 5: {A}     →  A directly  →  RTP
-                                     ↑
-                          popped one per 20ms tick
+  tick 1: pop_tick() → {A: frame, B: frame}  →  mix(A+B)    →  RTP
+  tick 2: pop_tick() → {A: frame, B: frame}  →  mix(A+B)    →  RTP
+  tick 3: pop_tick() → {A: frame}            →  A directly   →  RTP
+  tick 4: pop_tick() → {A: frame}            →  A directly   →  RTP
+  tick 5: pop_tick() → {A: frame}            →  A directly   →  RTP
+                                                                 ↑
+                                                    popped one per 20ms tick
 ```
 
 Queue caps at 50 slots (~1s); oldest dropped on overflow.

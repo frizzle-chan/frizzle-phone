@@ -5,6 +5,7 @@ Ported from discord-ext-voice-recv (https://github.com/imayhaveborkedit/discord-
 
 from __future__ import annotations
 
+import functools
 import struct
 from collections import namedtuple
 from typing import Any, Final
@@ -14,7 +15,7 @@ OPUS_SILENCE: Final = b"\xf8\xff\xfe"
 
 def is_rtcp(data: bytes) -> bool:
     """Check if a packet is RTCP based on the payload type byte."""
-    return 200 <= data[1] <= 204
+    return len(data) >= 2 and 200 <= data[1] <= 204
 
 
 def parse_rtp(data: bytes) -> RtpPacket:
@@ -22,6 +23,7 @@ def parse_rtp(data: bytes) -> RtpPacket:
     return RtpPacket(data)
 
 
+@functools.total_ordering
 class _PacketCmpMixin:
     __slots__ = ()
 
@@ -35,17 +37,14 @@ class _PacketCmpMixin:
             raise TypeError(f"packet ssrc mismatch ({self.ssrc}, {other.ssrc})")
         return self.sequence < other.sequence
 
-    def __gt__(self, other: _PacketCmpMixin) -> bool:
-        if self.ssrc != other.ssrc:
-            raise TypeError(f"packet ssrc mismatch ({self.ssrc}, {other.ssrc})")
-        return self.sequence > other.sequence
-
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _PacketCmpMixin):
             return NotImplemented
         if self.ssrc != other.ssrc:
             return False
         return self.sequence == other.sequence
+
+    __hash__ = None  # unhashable (mutable sequence)
 
     def is_silence(self) -> bool:
         return self.decrypted_data == OPUS_SILENCE

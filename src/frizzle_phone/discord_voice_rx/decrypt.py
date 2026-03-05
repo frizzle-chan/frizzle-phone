@@ -77,10 +77,11 @@ class PacketDecryptor:
         nonce[:4] = packet.nonce
         voice_data = packet.data
 
-        assert isinstance(self._box, nacl.secret.Aead)
-        result = self._box.decrypt(
-            bytes(voice_data), bytes(packet.header), bytes(nonce)
-        )
+        # Constructor guarantees Aead for aead_* modes; narrow for type checker.
+        box = self._box
+        if not isinstance(box, nacl.secret.Aead):
+            raise RuntimeError(f"expected Aead box for {self.mode}, got {type(box)}")
+        result = box.decrypt(bytes(voice_data), bytes(packet.header), bytes(nonce))
         return self._strip_ext(packet, result)
 
 

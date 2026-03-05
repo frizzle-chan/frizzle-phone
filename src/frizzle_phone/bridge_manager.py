@@ -36,8 +36,7 @@ class BridgeHandle:
         self._stop_event.set()
         self._send_task.cancel()
         self._rtp_transport.close()
-        self._voice_client.stop()
-        self._voice_client.stop_listening()
+        self._voice_client.stop()  # calls stop_listening() internally
 
 
 class BridgeManager:

@@ -30,6 +30,5 @@ FakePacket  # type: ignore[name-defined]
 
 # discord_voice_rx: mock comparison dunders used by heapq in tests
 _.__lt__  # type: ignore[name-defined]
-_.__gt__  # type: ignore[name-defined]
 _.__eq__  # type: ignore[name-defined]
 _.__bool__  # type: ignore[name-defined]
