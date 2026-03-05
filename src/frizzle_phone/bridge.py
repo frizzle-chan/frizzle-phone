@@ -4,20 +4,19 @@
 #   d2p = Discord-to-Phone (audio from Discord voice → SIP/RTP to phone)
 #   p2d = Phone-to-Discord (audio from SIP/RTP phone → Discord voice)
 # Queue parameters use long form (phone_to_discord_queue), constants use
-# short form (P2D_QUEUE_SIZE), and stats fields use short form (d2p_frames_in).
+# short form (P2D_QUEUE_SIZE), and stats fields use short form (d2p_frames_mixed).
 
 import asyncio
 import logging
 import queue
 import random
-import threading
 import time
 from collections import deque
+from collections.abc import Callable
 
 import discord
 import numpy as np
 import soxr
-from discord.ext import voice_recv
 
 from frizzle_phone.agc import AgcBank
 from frizzle_phone.bridge_stats import BridgeStats
@@ -32,15 +31,6 @@ ULAW_SILENCE_PAYLOAD = b"\xff" * SAMPLES_PER_PACKET  # 20ms of 8kHz PCMU silence
 MAX_SLOT_QUEUE = 50  # 1s max buffer, bounds latency
 DISCORD_SAMPLE_RATE = 48000  # discord.py Encoder.SAMPLING_RATE (Opus mandates 48kHz)
 DISCORD_FRAME_SAMPLES = DISCORD_SAMPLE_RATE * PTIME_MS // 1000  # 960
-
-
-def stereo_to_mono(data: bytes) -> np.ndarray:
-    """Convert 48kHz stereo s16le PCM to mono int16 array."""
-    stereo = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
-    mixed = stereo[:, 0].astype(np.int32)
-    mixed += stereo[:, 1]
-    mixed >>= 1
-    return mixed.astype(np.int16)
 
 
 def mix_slot(slot: dict[int, np.ndarray]) -> np.ndarray:
@@ -83,42 +73,6 @@ class PhoneAudioSource(discord.AudioSource):
 
     def cleanup(self) -> None:
         self._stopped = True
-
-
-class PhoneAudioSink(voice_recv.AudioSink):
-    """Receives Discord voice and accumulates raw mono frames for mixing.
-
-    The rtp_send_loop drains accumulated frames each 20ms tick and performs
-    slot-based mixing, resampling, and RTP encoding — keeping mixing on a
-    strict cadence instead of the bursty write() thread.
-    """
-
-    def __init__(self, *, stats: BridgeStats | None = None) -> None:
-        super().__init__()
-        self._lock = threading.Lock()
-        self._buf: list[tuple[int, np.ndarray]] = []
-        self._stats = stats
-
-    def wants_opus(self) -> bool:
-        return False
-
-    def drain(self) -> list[tuple[int, np.ndarray]]:
-        """Swap out accumulated frames (thread-safe). Returns the old buffer."""
-        with self._lock:
-            frames = self._buf
-            self._buf = []
-        return frames
-
-    def write(self, user: discord.User | None, data: voice_recv.VoiceData) -> None:  # type: ignore[override]
-        if self._stats:
-            self._stats.record_d2p_write()
-        user_key = user.id if user is not None else 0
-        mono = stereo_to_mono(data.pcm)
-        with self._lock:
-            self._buf.append((user_key, mono))
-
-    def cleanup(self) -> None:
-        self.drain()  # discard remaining frames
 
 
 class ChunkedResampler:
@@ -179,14 +133,14 @@ def _new_resampler() -> ChunkedResampler:
 
 
 async def rtp_send_loop(
-    sink: PhoneAudioSink,
+    pop_tick: Callable[[], dict[int, np.ndarray]],
     transport: asyncio.DatagramTransport,
     remote_addr: tuple[str, int],
     *,
     stop_event: asyncio.Event,
     stats: BridgeStats | None = None,
 ) -> None:
-    """Drain sink, mix, resample, and send RTP packets at 20ms intervals."""
+    """Pull frames via pop_tick, mix, resample, send RTP at 20ms intervals."""
     ssrc = random.randint(0, 0xFFFFFFFF)
     seq = random.randint(0, 0xFFFF)
     timestamp = random.randint(0, 0xFFFFFFFF)
@@ -200,19 +154,10 @@ async def rtp_send_loop(
     payload_queue: deque[bytes] = deque()
 
     while not stop_event.is_set():
-        # 1. Drain new frames into slots
-        frames = sink.drain()
-        if frames:
-            current_slot: dict[int, np.ndarray] = {}
-            for user_key, mono in frames:
-                if user_key in current_slot:
-                    slot_queue.append(current_slot)
-                    current_slot = {}
-                current_slot[user_key] = mono
-            if current_slot:
-                slot_queue.append(current_slot)
-
-            # Cap queue — drop oldest if overflowing
+        # 1. Pull one tick of per-user frames
+        tick = pop_tick()
+        if tick:
+            slot_queue.append(tick)
             while len(slot_queue) > MAX_SLOT_QUEUE:
                 slot_queue.popleft()
                 if stats:

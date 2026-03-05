@@ -6,10 +6,9 @@ import asyncio
 import logging
 import queue
 
-from discord.ext import voice_recv
-
-from frizzle_phone.bridge import PhoneAudioSink, PhoneAudioSource, rtp_send_loop
+from frizzle_phone.bridge import PhoneAudioSource, rtp_send_loop
 from frizzle_phone.bridge_stats import BridgeStats
+from frizzle_phone.discord_voice_rx import VoiceRecvClient
 from frizzle_phone.rtp.receive import RtpReceiveProtocol
 
 logger = logging.getLogger(__name__)
@@ -25,22 +24,19 @@ class BridgeHandle:
         stop_event: asyncio.Event,
         send_task: asyncio.Task[None],
         rtp_transport: asyncio.DatagramTransport,
-        voice_client: voice_recv.VoiceRecvClient,
-        sink: PhoneAudioSink,
+        voice_client: VoiceRecvClient,
     ) -> None:
         self._stop_event = stop_event
         self._send_task = send_task
         self._rtp_transport = rtp_transport
         self._voice_client = voice_client
-        self._sink = sink
 
     def stop(self) -> None:
         """Tear down the bridge. Idempotent."""
         self._stop_event.set()
         self._send_task.cancel()
         self._rtp_transport.close()
-        self._voice_client.stop()
-        self._sink.cleanup()
+        self._voice_client.stop()  # calls stop_listening() internally
 
 
 class BridgeManager:
@@ -51,7 +47,7 @@ class BridgeManager:
 
     async def start(
         self,
-        voice_client: voice_recv.VoiceRecvClient,
+        voice_client: VoiceRecvClient,
         rtp_port: int,
         remote_rtp_addr: tuple[str, int],
     ) -> BridgeHandle:
@@ -75,14 +71,13 @@ class BridgeManager:
         voice_client.play(source)
 
         # Discord -> Phone
-        sink = PhoneAudioSink(stats=stats)
-        voice_client.listen(sink)
+        voice_client.start_listening()
 
         # RTP send loop
         stop_event = asyncio.Event()
         send_task = loop.create_task(
             rtp_send_loop(
-                sink,
+                voice_client.pop_tick,
                 rtp_transport,
                 remote_rtp_addr,
                 stop_event=stop_event,
@@ -98,7 +93,6 @@ class BridgeManager:
             send_task=send_task,
             rtp_transport=rtp_transport,
             voice_client=voice_client,
-            sink=sink,
         )
 
     def shutdown(self) -> None:
