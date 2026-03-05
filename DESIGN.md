@@ -139,7 +139,7 @@ Queue caps at 50 slots (~1s); oldest dropped on overflow.
 
 **Timing:** The `rtp_send_loop` runs on a strict 20ms wall-clock cadence using `time.monotonic()`. If the loop falls behind (e.g. event loop congestion), it snaps forward to avoid bursting catch-up packets. The resampler is reset after silence gaps to avoid filtering stale state.
 
-**AGC:** Per-speaker automatic gain control (`AgcBank`) normalizes each speaker's level to -20 dBFS before mixing. Uses RMS-based gain with asymmetric time constants (500ms attack, 50ms release) and a -50 dBFS noise gate. Gain is clamped to [-10, +20] dB. Stale speakers are expired after 30s of inactivity.
+**AGC:** Per-speaker automatic gain control (`AgcBank`) normalizes each speaker's level to -20 dBFS before mixing. Uses RMS-based gain with asymmetric time constants (500ms attack, 50ms release), a 500ms level estimation window, and a -50 dBFS noise gate. Gain increases are held off for 120ms (6 frames) to prevent transient bursts from pumping gain up. Output uses a tanh soft limiter instead of hard clipping to avoid distortion near int16 boundaries. Gain is clamped to [-10, +20] dB. Stale speakers are expired after 30s of inactivity.
 
 **Mixing:** When a slot has multiple speakers, their mono samples are summed in int32 with 1/sqrt(N) gain scaling and clipped back to int16. Single-speaker slots skip the mix entirely.
 

@@ -20,10 +20,14 @@ FRAME_DURATION = 0.020  # 20ms
 _ATTACK_ALPHA = 1.0 - np.exp(-FRAME_DURATION / ATTACK_TC)
 _RELEASE_ALPHA = 1.0 - np.exp(-FRAME_DURATION / RELEASE_TC)
 
-# EMA smoothing for RMS level measurement (~200ms window).
-# Prevents gain from tracking syllable-level dynamics in speech.
-_LEVEL_TC = 0.200
+# EMA smoothing for RMS level measurement (~500ms window).
+# Matched to attack TC to avoid level estimator lagging behind gain controller.
+_LEVEL_TC = 0.500
 _LEVEL_ALPHA = 1.0 - np.exp(-FRAME_DURATION / _LEVEL_TC)
+
+# Hold-off: require sustained speech before increasing gain,
+# prevents transient bursts from pumping gain up.
+_HOLDOFF_FRAMES = 6  # 120ms, matches WebRTC's 12 * 10ms
 
 # Stale speaker expiry
 STALE_TIMEOUT = 30.0
@@ -37,15 +41,28 @@ def _rms_dbfs(samples: np.ndarray) -> float:
     return 20.0 * np.log10(rms / 32768.0)
 
 
+def _soft_clip(samples: np.ndarray) -> np.ndarray:
+    """Tanh soft limiter — smoothly compresses near int16 boundaries."""
+    normalized = samples / 32768.0
+    return (np.tanh(normalized) * 32768.0).astype(np.int16)
+
+
 class Agc:
     """RMS-based gain controller for a single speaker."""
 
-    __slots__ = ("gain_db", "_prev_gain_db", "_energy", "last_active")
+    __slots__ = (
+        "gain_db",
+        "_prev_gain_db",
+        "_energy",
+        "_above_gate_count",
+        "last_active",
+    )
 
     def __init__(self) -> None:
         self.gain_db = 0.0
         self._prev_gain_db = 0.0
         self._energy = -1.0  # sentinel: first frame seeds the EMA
+        self._above_gate_count = 0
         self.last_active = time.monotonic()
 
     def process(self, samples: np.ndarray) -> np.ndarray:
@@ -53,9 +70,11 @@ class Agc:
         self.last_active = time.monotonic()
         prev_linear = 10.0 ** (self._prev_gain_db / 20.0)
 
+        samples_f = samples.astype(np.float64)
+
         # Smoothed level: EMA of frame energy avoids chasing
         # syllable-level dynamics that cause AM artifacts.
-        frame_energy = float(np.mean(samples.astype(np.float64) ** 2))
+        frame_energy = float(np.mean(samples_f**2))
         if self._energy < 0:
             self._energy = frame_energy  # seed on first frame
         else:
@@ -66,18 +85,24 @@ class Agc:
 
         # Gate: don't adjust gain on silence/noise
         if level >= GATE_DBFS:
+            self._above_gate_count = min(self._above_gate_count + 1, _HOLDOFF_FRAMES)
             error = TARGET_DBFS - (level + self.gain_db)
-            alpha = _ATTACK_ALPHA if error > 0 else _RELEASE_ALPHA
-            self.gain_db += alpha * error
-            self.gain_db = max(MIN_GAIN_DB, min(MAX_GAIN_DB, self.gain_db))
+            # Apply gain adjustment if attenuating (error <= 0) or
+            # hold-off satisfied (sustained speech above gate).
+            if error <= 0 or self._above_gate_count >= _HOLDOFF_FRAMES:
+                alpha = _ATTACK_ALPHA if error > 0 else _RELEASE_ALPHA
+                self.gain_db += alpha * error
+                self.gain_db = max(MIN_GAIN_DB, min(MAX_GAIN_DB, self.gain_db))
+        else:
+            self._above_gate_count = 0
 
         # Linear ramp from previous gain to current gain across the
         # frame, eliminating the step discontinuity at frame boundaries.
         cur_linear = 10.0 ** (self.gain_db / 20.0)
         self._prev_gain_db = self.gain_db
         ramp = np.linspace(prev_linear, cur_linear, len(samples))
-        amplified = samples.astype(np.float64) * ramp
-        return np.clip(amplified, -32768, 32767).astype(np.int16)
+        amplified = samples_f * ramp
+        return _soft_clip(amplified)
 
 
 class AgcBank:

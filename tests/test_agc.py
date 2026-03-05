@@ -12,6 +12,7 @@ from frizzle_phone.agc import (
     Agc,
     AgcBank,
     _rms_dbfs,
+    _soft_clip,
 )
 from frizzle_phone.bridge import mix_slot
 
@@ -59,10 +60,10 @@ def test_quiet_signal_boosted():
 
 
 def test_loud_signal_attenuated():
-    """Loud signal (-10 dBFS) gets attenuated toward -20 dBFS within ~200ms."""
+    """Loud signal (-10 dBFS) gets attenuated toward -20 dBFS within ~500ms."""
     agc = Agc()
-    # 200ms = 10 frames; -10 dBFS needs -10 dB gain (at min gain limit)
-    out = _run_frames(agc, -10.0, 10)
+    # 500ms = 25 frames; level estimate converges slower with 500ms TC
+    out = _run_frames(agc, -10.0, 25)
     out_level = _measure_dbfs(out)
     # Should be within 3 dB of target
     assert out_level < TARGET_DBFS + 3.0, (
@@ -129,6 +130,71 @@ def test_no_int16_overflow():
     assert np.all(out <= 32767)
 
 
+def test_soft_clip_gradient():
+    """Soft limiter output near clipping is smooth (no hard edges)."""
+    agc = Agc()
+    # Pump gain up with quiet signal
+    _run_frames(agc, -35.0, 100)
+    assert agc.gain_db > 5.0, "Need positive gain for this test"
+
+    # Feed loud signal — high gain + loud input should hit limiter
+    loud = _tone(-3.0)
+    out = agc.process(loud)
+    assert out.dtype == np.int16
+    # With tanh soft clip, no output samples should be at exactly ±32767
+    # (hard clip produces flat edges; tanh asymptotically approaches but never reaches)
+    assert not np.any(np.abs(out) == 32767), (
+        "Soft limiter should not produce samples at exactly ±32767"
+    )
+    # Output should still be loud (not collapsed)
+    assert _measure_dbfs(out) > -10.0
+
+
+def test_holdoff_blocks_brief_burst():
+    """Gain doesn't increase for brief above-gate bursts (<6 frames)."""
+    agc = Agc()
+    # Feed 4 frames of quiet-but-above-gate signal (needs gain boost)
+    for _ in range(4):
+        agc.process(_tone(-35.0))
+    assert agc.gain_db == 0.0, (
+        f"Gain should not increase during hold-off, got {agc.gain_db:.2f}"
+    )
+
+    # Reset with silence to clear the counter
+    for _ in range(10):
+        agc.process(_tone(-55.0))
+
+    # Feed 8+ continuous above-gate frames — gain should increase
+    agc2 = Agc()
+    for _ in range(10):
+        agc2.process(_tone(-35.0))
+    assert agc2.gain_db > 0.0, (
+        f"Gain should increase after hold-off, got {agc2.gain_db:.2f}"
+    )
+
+
+def test_holdoff_does_not_block_attenuation():
+    """Gain decreases are never held off — loud signals attenuated immediately."""
+    agc = Agc()
+    # First frame of a loud signal should still decrease gain
+    agc.process(_tone(-5.0))
+    assert agc.gain_db < 0.0, (
+        f"Attenuation should not be held off, got {agc.gain_db:.2f}"
+    )
+
+
+def test_soft_clip_passthrough():
+    """Soft limiter is transparent for small signals."""
+    small = np.array([0, 100, -100, 1000, -1000], dtype=np.int16)
+    out = _soft_clip(small.astype(np.float64))
+    # For small values, tanh(x) ≈ x — output should be very close to input
+    np.testing.assert_allclose(
+        out.astype(np.float64),
+        small.astype(np.float64),
+        atol=2.0,
+    )
+
+
 def test_attack_slower_than_release():
     """Attack (gain increase) is slower than release (gain decrease)."""
     # Measure frames to reach within 3 dB of target from each direction
@@ -176,8 +242,10 @@ def test_output_dtype_always_int16():
 def test_agcbank_independent_per_speaker():
     """AgcBank creates independent per-speaker state."""
     bank = AgcBank()
-    slot = {1: _tone(-40.0), 2: _tone(-5.0)}
-    bank.process_slot(slot)
+    # Need >6 frames to get past hold-off for gain increase
+    for _ in range(10):
+        slot = {1: _tone(-40.0), 2: _tone(-5.0)}
+        bank.process_slot(slot)
     # Speaker 1 should have positive gain, speaker 2 negative
     assert bank._speakers[1].gain_db > 0
     assert bank._speakers[2].gain_db < 0
