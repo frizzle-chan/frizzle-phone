@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.11",
     "aiohttp-jinja2>=1.6",
     "aiosqlite>=0.20.0",
+    "davey>=0.1.4",
     "discord-py[voice]>=2.7.0",
     "python-dotenv>=1.2.1",
     "soxr>=0.5.0",
