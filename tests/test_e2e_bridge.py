@@ -25,7 +25,6 @@ from tests.fake_voice import (
 from tests.rtp_helpers import RtpCollector, parse_rtp_payload
 
 # --- Constants ---
-NUM_SPEAKERS = 5
 TICKS = 200  # 4s of audio
 SAMPLE_RATE_8K = 8000
 TEST_GUILD_ID = 1234
