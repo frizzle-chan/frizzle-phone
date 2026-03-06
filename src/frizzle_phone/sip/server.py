@@ -786,6 +786,9 @@ class SipServer(asyncio.DatagramProtocol):
         handle = await self._bridge_manager.start(
             pb.voice_client, call.rtp_port, call.remote_rtp_addr
         )
+        if call.terminated:
+            handle.stop()
+            return
         call.discord_bridge = DiscordBridgeContext(
             voice_client=pb.voice_client,
             guild_id=pb.guild_id,
