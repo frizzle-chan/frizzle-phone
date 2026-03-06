@@ -113,9 +113,10 @@ class VoiceRecvClient(discord.VoiceClient):
 
         try:
             packet = parse_rtp(packet_data)
-            if self._decryptor is None:
+            decryptor = self._decryptor
+            if decryptor is None:
                 return
-            transport_decrypted = self._decryptor.decrypt_rtp(packet)
+            transport_decrypted = decryptor.decrypt_rtp(packet)
 
             # Apply DAVE decryption if available
             dave_session = getattr(self._connection, "dave_session", None)
@@ -138,5 +139,6 @@ class VoiceRecvClient(discord.VoiceClient):
         if packet.ssrc not in self._ssrc_to_id:
             return
 
-        if self._decoder_thread is not None:
-            self._decoder_thread.feed(packet.ssrc, packet)
+        dt = self._decoder_thread
+        if dt is not None:
+            dt.feed(packet.ssrc, packet)
