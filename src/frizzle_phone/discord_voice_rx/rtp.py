@@ -35,7 +35,8 @@ class _PacketCmpMixin:
     def __lt__(self, other: _PacketCmpMixin) -> bool:
         if self.ssrc != other.ssrc:
             raise TypeError(f"packet ssrc mismatch ({self.ssrc}, {other.ssrc})")
-        return self.sequence < other.sequence
+        # Wrapping comparison: handles sequence rollover from 65535→0
+        return (self.sequence - other.sequence) % 65536 > 32768
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _PacketCmpMixin):

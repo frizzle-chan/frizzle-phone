@@ -95,6 +95,13 @@ class TestParseRtp:
         pkt_b = parse_rtp(_build_rtp(ssrc=1, seq=20, timestamp=200))
         assert pkt_a < pkt_b
 
+    def test_comparison_wraps_at_65535(self):
+        """Sequence 0 should sort AFTER 65535 (wrapping comparison)."""
+        old = parse_rtp(_build_rtp(ssrc=1, seq=65535, timestamp=100))
+        new = parse_rtp(_build_rtp(ssrc=1, seq=0, timestamp=200))
+        assert old < new
+        assert not (new < old)
+
     def test_adjust_rtpsize(self):
         """rtpsize mode: 4-byte nonce at end of data, ext header moved to header."""
         inner_payload = b"\xcc" * 10
