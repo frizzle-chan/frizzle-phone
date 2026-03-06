@@ -88,14 +88,24 @@ class PacketDecryptor:
         return self._strip_ext(packet, result)
 
 
+_DAVE_MAGIC = b"\xfa\xfa"
+_DAVE_LOG_INTERVAL_S = 5.0
+_dave_fail_state: dict[str, float | int] = {"next_log": 0.0, "suppressed": 0}
+
+
 def dave_decrypt(
     *,
     dave_session: object | None,
     ssrc_to_id: dict[int, int],
     ssrc: int,
     transport_decrypted: bytes,
-) -> bytes:
-    """Apply DAVE (Discord Audio Video Encryption) if session is ready."""
+) -> bytes | None:
+    """Apply DAVE (Discord Audio Video Encryption) if session is ready.
+
+    Returns None when DAVE is active but decryption fails, signalling the
+    caller to use packet-loss concealment instead of feeding encrypted
+    bytes to the Opus decoder.
+    """
     if dave_session is None or not dave_session.ready:  # type: ignore[union-attr]
         return transport_decrypted
     uid = ssrc_to_id.get(ssrc)
@@ -103,9 +113,31 @@ def dave_decrypt(
         return transport_decrypted
     try:
         return dave_session.decrypt(uid, _davey().MediaType.audio, transport_decrypted)  # type: ignore[union-attr]
-    except Exception:
-        log.debug("DAVE decrypt failed for uid=%d, passing through", uid)
-        return transport_decrypted
+    except Exception as exc:
+        _log_dave_failure(uid, exc, transport_decrypted)
+        return None
+
+
+def _log_dave_failure(uid: int, exc: Exception, data: bytes) -> None:
+    """Log DAVE decrypt failure, rate-limited to once per interval."""
+    import time
+
+    now = time.monotonic()
+    if now < _dave_fail_state["next_log"]:
+        _dave_fail_state["suppressed"] = int(_dave_fail_state["suppressed"]) + 1
+        return
+
+    suppressed = int(_dave_fail_state["suppressed"])
+    has_marker = data[-2:] == _DAVE_MAGIC
+    msg = "DAVE decrypt failed uid=%d: %s (marker=%s, len=%d)"
+    args: tuple[object, ...] = (uid, exc, has_marker, len(data))
+    if suppressed > 0:
+        msg += " [%d suppressed]"
+        args = (*args, suppressed)
+
+    log.warning(msg, *args)
+    _dave_fail_state["next_log"] = now + _DAVE_LOG_INTERVAL_S
+    _dave_fail_state["suppressed"] = 0
 
 
 def _davey():  # noqa: ANN202
