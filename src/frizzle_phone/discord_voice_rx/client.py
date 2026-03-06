@@ -38,6 +38,10 @@ class VoiceRecvClient(discord.VoiceClient):
         return VoiceConnectionState(self, hook=hook)
 
     def _add_ssrc(self, user_id: int, ssrc: int) -> None:
+        # These dicts are written here (asyncio thread) and read by
+        # _socket_callback_fn (socket reader thread).  Under CPython's GIL
+        # individual dict ops are atomic, which is sufficient — the socket
+        # callback only reads _ssrc_to_id.  See GH-51 for free-threading.
         self._ssrc_to_id[ssrc] = user_id
         self._id_to_ssrc[user_id] = ssrc
         if self._decoder_thread:
