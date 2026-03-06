@@ -8,8 +8,8 @@ import queue
 
 from frizzle_phone.bridge import PhoneAudioSource, rtp_send_loop
 from frizzle_phone.bridge_stats import BridgeStats
-from frizzle_phone.discord_voice_rx import VoiceRecvClient
 from frizzle_phone.rtp.receive import RtpReceiveProtocol
+from frizzle_phone.voice_protocols import BridgeableVoiceClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class BridgeHandle:
         stop_event: asyncio.Event,
         send_task: asyncio.Task[None],
         rtp_transport: asyncio.DatagramTransport,
-        voice_client: VoiceRecvClient,
+        voice_client: BridgeableVoiceClient,
     ) -> None:
         self._stop_event = stop_event
         self._send_task = send_task
@@ -47,7 +47,7 @@ class BridgeManager:
 
     async def start(
         self,
-        voice_client: VoiceRecvClient,
+        voice_client: BridgeableVoiceClient,
         rtp_port: int,
         remote_rtp_addr: tuple[str, int],
     ) -> BridgeHandle:
