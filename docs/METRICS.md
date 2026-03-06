@@ -2,6 +2,8 @@
 
 frizzle-phone exposes Prometheus metrics on `GET /metrics` (port 8080). Scrape interval: 15–30s recommended (metrics update every 5s internally).
 
+**Grafana dashboard:** [`docs/grafana-dashboard.json`](grafana-dashboard.json) — import via Dashboards → Import and select your Prometheus datasource.
+
 ## Metric Inventory
 
 ### Bridge Counters (`frizzle_bridge_*`)
