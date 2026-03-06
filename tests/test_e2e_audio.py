@@ -16,21 +16,7 @@ from tests.audio_helpers import (
     resample_to_48k_frames,
     wav_samples_check,
 )
-
-
-def _parse_rtp_payload(data: bytes) -> bytes:
-    """Extract payload from an RTP packet (skip fixed 12-byte header)."""
-    return data[12:] if len(data) > 12 else b""
-
-
-class _RtpCollector(asyncio.DatagramProtocol):
-    """Receives UDP datagrams into a list."""
-
-    def __init__(self) -> None:
-        self.packets: list[bytes] = []
-
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        self.packets.append(data)
+from tests.rtp_helpers import RtpCollector, parse_rtp_payload
 
 
 class _PacedPopper:
@@ -69,7 +55,7 @@ async def test_dave_to_rtp_e2e(file_regression):
     popper = _PacedPopper(mono_frames)
 
     loop = asyncio.get_running_loop()
-    collector = _RtpCollector()
+    collector = RtpCollector()
     recv_transport, _ = await loop.create_datagram_endpoint(
         lambda: collector, local_addr=("127.0.0.1", 0)
     )
@@ -109,7 +95,7 @@ async def test_dave_to_rtp_e2e(file_regression):
     # Step 4: Collect, decode, compare
     received_ulaw = b""
     for pkt in collector.packets[:expected_count]:
-        received_ulaw += _parse_rtp_payload(pkt)
+        received_ulaw += parse_rtp_payload(pkt)
 
     pcm_8k = ulaw_to_pcm(received_ulaw)
     wav_bytes = pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)

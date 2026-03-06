@@ -16,6 +16,7 @@ from frizzle_phone.sip.message import parse_message
 from frizzle_phone.sip.server import start_server
 from tests.audio_helpers import pcm_to_wav, wav_samples_check
 from tests.fake_voice import CHORD_FREQS, FakeVoiceRecvClient, sine_tone_speakers
+from tests.rtp_helpers import RtpCollector, parse_rtp_payload
 
 # --- Constants ---
 NUM_SPEAKERS = 5
@@ -34,14 +35,6 @@ class _ClientProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         self.queue.put_nowait(data)
-
-
-class _RtpCollector(asyncio.DatagramProtocol):
-    def __init__(self) -> None:
-        self.packets: list[bytes] = []
-
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        self.packets.append(data)
 
 
 async def _recv(queue: asyncio.Queue[bytes], timeout: float = 2.0) -> bytes:
@@ -144,10 +137,6 @@ def _build_bye(
     return "\r\n".join(lines).encode()
 
 
-def _parse_rtp_payload(data: bytes) -> bytes:
-    return data[12:] if len(data) > 12 else b""
-
-
 # --- Fixtures ---
 
 
@@ -174,7 +163,7 @@ async def test_five_speaker_bridge_audio(
     loop = asyncio.get_running_loop()
 
     # 1. Set up RTP collector ("the phone")
-    collector = _RtpCollector()
+    collector = RtpCollector()
     rtp_recv_transport, _ = await loop.create_datagram_endpoint(
         lambda: collector, local_addr=("127.0.0.1", 0)
     )
@@ -232,7 +221,7 @@ async def test_five_speaker_bridge_audio(
         # 9. Verify audio content via golden file
         received_ulaw = b""
         for pkt in collector.packets[:TICKS]:
-            received_ulaw += _parse_rtp_payload(pkt)
+            received_ulaw += parse_rtp_payload(pkt)
 
         pcm_8k = ulaw_to_pcm(received_ulaw)
         wav_bytes = pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)

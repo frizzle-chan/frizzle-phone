@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-# C major chord frequencies — same as test_e2e_multi_speaker.py
+# C major chord frequencies (Hz)
 CHORD_FREQS = [261.63, 329.63, 392.00, 523.25, 659.25]
 SAMPLE_RATE = 48000
 FRAME_SAMPLES = 960  # 20ms at 48kHz

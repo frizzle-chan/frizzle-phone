@@ -11,13 +11,10 @@ from frizzle_phone.bridge import rtp_send_loop
 from frizzle_phone.bridge_stats import BridgeStats
 from frizzle_phone.rtp.pcmu import ulaw_to_pcm
 from tests.audio_helpers import pcm_to_wav, wav_samples_check
+from tests.fake_voice import AMPLITUDE, CHORD_FREQS, FRAME_SAMPLES, SAMPLE_RATE
+from tests.rtp_helpers import RtpCollector, parse_rtp_payload
 
-# C major chord frequencies (Hz)
-FREQS = [261.63, 329.63, 392.00, 523.25, 659.25]
 NUM_SPEAKERS = 5
-AMPLITUDE = 6000  # 5 * 6000 = 30000 < 32767, no clipping
-SAMPLE_RATE = 48000
-FRAME_SAMPLES = 960  # 20ms at 48kHz
 
 SILENCE_TICKS = 5
 STAGGER_TICKS = 40
@@ -50,7 +47,7 @@ def _build_tick_data() -> list[list[tuple[int, np.ndarray]]]:
     # Pre-generate all frames per speaker
     all_frames: list[list[np.ndarray]] = []
     for i in range(NUM_SPEAKERS):
-        all_frames.append(_generate_tone_frames(FREQS[i], speaker_n_frames[i]))
+        all_frames.append(_generate_tone_frames(CHORD_FREQS[i], speaker_n_frames[i]))
 
     # Build tick data
     ticks: list[list[tuple[int, np.ndarray]]] = []
@@ -64,21 +61,6 @@ def _build_tick_data() -> list[list[tuple[int, np.ndarray]]]:
                 frame_list.append((user_id, all_frames[spk][frame_idx]))
         ticks.append(frame_list)
     return ticks
-
-
-def _parse_rtp_payload(data: bytes) -> bytes:
-    """Extract payload from an RTP packet (skip fixed 12-byte header)."""
-    return data[12:] if len(data) > 12 else b""
-
-
-class _RtpCollector(asyncio.DatagramProtocol):
-    """Receives UDP datagrams into a list."""
-
-    def __init__(self) -> None:
-        self.packets: list[bytes] = []
-
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        self.packets.append(data)
 
 
 class _MultiPacedPopper:
@@ -109,7 +91,7 @@ async def test_multi_speaker_chord_stagger(file_regression):
     stats._last_summary = time.monotonic()
 
     loop = asyncio.get_running_loop()
-    collector = _RtpCollector()
+    collector = RtpCollector()
     recv_transport, _ = await loop.create_datagram_endpoint(
         lambda: collector, local_addr=("127.0.0.1", 0)
     )
@@ -164,7 +146,7 @@ async def test_multi_speaker_chord_stagger(file_regression):
     # --- Golden file ---
     received_ulaw = b""
     for pkt in collector.packets[:TOTAL_TICKS]:
-        received_ulaw += _parse_rtp_payload(pkt)
+        received_ulaw += parse_rtp_payload(pkt)
 
     pcm_8k = ulaw_to_pcm(received_ulaw)
     wav_bytes = pcm_to_wav(pcm_8k, channels=1, sampwidth=2, framerate=8000)
