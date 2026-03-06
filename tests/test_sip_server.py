@@ -205,6 +205,31 @@ def _make_call(call_id: str = "test@10.0.0.1") -> Call:
     )
 
 
+@pytest.mark.asyncio
+async def test_start_discord_bridge_stops_handle_if_terminated(db):
+    """If call is terminated during bridge_manager.start(), handle is stopped."""
+    server, _transport = _make_server(db)
+    call = _make_call()
+    vc = MagicMock()
+    call.pending_bridge = PendingBridge(voice_client=vc, guild_id=1, channel_id=2)
+    server._calls[call.call_id] = call
+
+    mock_handle = MagicMock(spec=BridgeHandle)
+
+    async def _simulate_bye(*_args, **_kwargs):
+        call.terminated = True
+        call.pending_bridge = None
+        return mock_handle
+
+    server._bridge_manager = MagicMock()
+    server._bridge_manager.start = AsyncMock(side_effect=_simulate_bye)
+
+    await server._start_discord_bridge(call)
+
+    mock_handle.stop.assert_called_once()
+    assert call.discord_bridge is None
+
+
 def test_get_bridged_calls_active_bridges(db):
     """get_bridged_calls returns (guild_id, channel_id) for active bridges."""
     server, _transport = _make_server(db)
