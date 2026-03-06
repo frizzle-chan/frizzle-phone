@@ -581,6 +581,13 @@ class SipServer(asyncio.DatagramProtocol):
                     channel.connect(cls=VoiceRecvClient),
                     timeout=10.0,
                 )
+                if call.terminated:
+                    vc.stop()
+                    self._fire_and_forget(
+                        vc.disconnect(),
+                        name=f"vc-disconnect-{call.call_id}",
+                    )
+                    return
                 call.pending_bridge = PendingBridge(
                     voice_client=vc,
                     guild_id=result.guild_id,
