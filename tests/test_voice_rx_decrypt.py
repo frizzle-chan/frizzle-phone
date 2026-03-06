@@ -263,15 +263,140 @@ class TestDaveDecrypt:
         assert result == b"original"
         dave_session.decrypt.assert_not_called()
 
-    def test_dave_decrypt_failure_falls_back(self):
+    def test_dave_decrypt_failure_returns_none(self):
+        """DAVE failure returns None (triggers PLC) instead of encrypted data."""
         dave_session = MagicMock()
         dave_session.ready = True
-        dave_session.decrypt.side_effect = RuntimeError("DecryptionFailed")
+        dave_session.decrypt.side_effect = ValueError(
+            "Failed to decrypt: DecryptionFailed"
+        )
 
         result = dave_decrypt(
             dave_session=dave_session,
             ssrc_to_id={1234: 42},
             ssrc=1234,
-            transport_decrypted=b"original",
+            transport_decrypted=b"still_encrypted",
         )
-        assert result == b"original"
+        assert result is None
+
+    def test_dave_decrypt_failure_logs_error_reason(self, caplog):
+        """DAVE failure logs the actual davey error message at WARNING."""
+        import logging
+
+        from frizzle_phone.discord_voice_rx.decrypt import _dave_fail_state
+
+        _dave_fail_state["next_log"] = 0.0
+        _dave_fail_state["suppressed"] = 0
+
+        dave_session = MagicMock()
+        dave_session.ready = True
+        dave_session.decrypt.side_effect = ValueError(
+            "Failed to decrypt: MissingKeyRatchet"
+        )
+
+        with caplog.at_level(
+            logging.WARNING, logger="frizzle_phone.discord_voice_rx.decrypt"
+        ):
+            dave_decrypt(
+                dave_session=dave_session,
+                ssrc_to_id={1234: 42},
+                ssrc=1234,
+                transport_decrypted=b"encrypted",
+            )
+
+        assert any(
+            "MissingKeyRatchet" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
+    def test_dave_decrypt_failure_logs_frame_marker(self, caplog):
+        """DAVE failure log includes whether frame has 0xFAFA DAVE marker."""
+        import logging
+
+        from frizzle_phone.discord_voice_rx.decrypt import _dave_fail_state
+
+        _dave_fail_state["next_log"] = 0.0
+        _dave_fail_state["suppressed"] = 0
+
+        dave_session = MagicMock()
+        dave_session.ready = True
+        dave_session.decrypt.side_effect = ValueError("Failed to decrypt: CryptoError")
+
+        # Frame ending with DAVE magic marker
+        dave_frame = b"\x00" * 50 + b"\xfa\xfa"
+
+        with caplog.at_level(
+            logging.WARNING, logger="frizzle_phone.discord_voice_rx.decrypt"
+        ):
+            dave_decrypt(
+                dave_session=dave_session,
+                ssrc_to_id={1234: 42},
+                ssrc=1234,
+                transport_decrypted=dave_frame,
+            )
+
+        assert any("marker=True" in r.message for r in caplog.records)
+
+    def test_dave_decrypt_failure_logs_no_marker(self, caplog):
+        """Frame without 0xFAFA marker is reported as marker=False."""
+        import logging
+
+        from frizzle_phone.discord_voice_rx.decrypt import _dave_fail_state
+
+        _dave_fail_state["next_log"] = 0.0
+        _dave_fail_state["suppressed"] = 0
+
+        dave_session = MagicMock()
+        dave_session.ready = True
+        dave_session.decrypt.side_effect = ValueError("Failed to decrypt: SomeError")
+
+        with caplog.at_level(
+            logging.WARNING, logger="frizzle_phone.discord_voice_rx.decrypt"
+        ):
+            dave_decrypt(
+                dave_session=dave_session,
+                ssrc_to_id={1234: 42},
+                ssrc=1234,
+                transport_decrypted=b"no_marker_here",
+            )
+
+        assert any("marker=False" in r.message for r in caplog.records)
+
+    def test_dave_decrypt_failure_rate_limited(self, caplog):
+        """After first WARNING, subsequent failures within window are suppressed."""
+        import logging
+
+        from frizzle_phone.discord_voice_rx.decrypt import _dave_fail_state
+
+        # Reset rate-limit state
+        _dave_fail_state["next_log"] = 0.0
+        _dave_fail_state["suppressed"] = 0
+
+        dave_session = MagicMock()
+        dave_session.ready = True
+        dave_session.decrypt.side_effect = ValueError("Failed to decrypt: SomeError")
+
+        with caplog.at_level(
+            logging.WARNING, logger="frizzle_phone.discord_voice_rx.decrypt"
+        ):
+            # First call: should log
+            dave_decrypt(
+                dave_session=dave_session,
+                ssrc_to_id={1234: 42},
+                ssrc=1234,
+                transport_decrypted=b"data",
+            )
+            first_count = sum(1 for r in caplog.records if r.levelno == logging.WARNING)
+            assert first_count == 1
+
+            # Second call immediately after: should be suppressed
+            dave_decrypt(
+                dave_session=dave_session,
+                ssrc_to_id={1234: 42},
+                ssrc=1234,
+                transport_decrypted=b"data",
+            )
+            second_count = sum(
+                1 for r in caplog.records if r.levelno == logging.WARNING
+            )
+            assert second_count == 1  # No new WARNING
