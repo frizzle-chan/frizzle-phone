@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
+import discord
 import pytest
 
 from frizzle_phone.bridge_manager import BridgeHandle
@@ -203,6 +204,48 @@ def _make_call(call_id: str = "test@10.0.0.1") -> Call:
         remote_from="<sip:phone@10.0.0.1>",
         remote_rtp_addr=("10.0.0.1", 20000),
     )
+
+
+@pytest.mark.asyncio
+async def test_invite_voice_connect_cleans_up_if_terminated(db):
+    """Terminated call during channel.connect() cleans up voice client."""
+    # Seed a discord extension so INVITE takes the voice connect path
+    await db.execute(
+        "INSERT INTO discord_extensions (extension, guild_id, channel_id)"
+        " VALUES ('frizzle', 123, 456)"
+    )
+    await db.commit()
+
+    server, transport = _make_server(db)
+
+    mock_vc = MagicMock()
+    mock_vc.stop = MagicMock()
+    mock_vc.disconnect = AsyncMock()
+
+    call_id = "cancel-vc@test"
+
+    async def _connect_simulating_cancel(*_args, **_kwargs):
+        # Simulate CANCEL arriving during the voice connect await
+        call = server._calls[call_id]
+        call.terminated = True
+        return mock_vc
+
+    mock_channel = MagicMock(spec=discord.VoiceChannel)
+    mock_channel.connect = AsyncMock(side_effect=_connect_simulating_cancel)
+
+    mock_guild = MagicMock()
+    mock_guild.get_channel.return_value = mock_channel
+
+    with patch.object(server._bot, "get_guild", return_value=mock_guild):
+        server.datagram_received(_make_request("INVITE", call_id=call_id), ADDR)
+        await _drain()
+
+    # Voice client should be cleaned up
+    mock_vc.stop.assert_called_once()
+    mock_vc.disconnect.assert_awaited_once()
+    # No 200 OK should be sent (call was terminated before reaching that point)
+    ok_responses = [d for d, _a in transport.sent if b"200 OK" in d]
+    assert len(ok_responses) == 0
 
 
 @pytest.mark.asyncio
