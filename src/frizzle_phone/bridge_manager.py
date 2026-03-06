@@ -75,6 +75,7 @@ class BridgeManager:
 
         # RTP send loop
         stop_event = asyncio.Event()
+        voice_recv_stats = getattr(voice_client, "recv_stats", None)
         send_task = loop.create_task(
             rtp_send_loop(
                 voice_client.pop_tick,
@@ -82,6 +83,7 @@ class BridgeManager:
                 remote_rtp_addr,
                 stop_event=stop_event,
                 stats=stats,
+                voice_recv_stats=voice_recv_stats,
             ),
             name=f"rtp-send-{rtp_port}",
         )
