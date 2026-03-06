@@ -53,6 +53,28 @@ else
   fail "GET / missing value=\"300\""
 fi
 
+# GET /metrics — Prometheus endpoint
+metrics_body=$(curl -sf "${BASE_URL}/metrics")
+metrics_status=$?
+
+if [[ $metrics_status -eq 0 ]]; then
+  pass "GET /metrics → 200"
+else
+  fail "GET /metrics → non-200 or unreachable"
+fi
+
+if echo "$metrics_body" | grep -q 'frizzle_active_calls'; then
+  pass "GET /metrics contains frizzle_active_calls"
+else
+  fail "GET /metrics missing frizzle_active_calls"
+fi
+
+if echo "$metrics_body" | grep -q 'frizzle_bridge_rtp_frames_sent_total'; then
+  pass "GET /metrics contains frizzle_bridge_rtp_frames_sent_total"
+else
+  fail "GET /metrics missing frizzle_bridge_rtp_frames_sent_total"
+fi
+
 # ── SIP checks ───────────────────────────────────────────────────────
 echo ""
 echo "=== SIP checks ==="

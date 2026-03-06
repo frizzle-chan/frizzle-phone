@@ -68,14 +68,27 @@ def test_log_summary_warns_on_high_silence_reads(caplog):
     assert any("p2d underflow" in r.message for r in warnings)
 
 
-def test_log_summary_warns_on_high_silence_sends(caplog):
+def test_log_summary_warns_on_pipeline_loss(caplog):
     stats = BridgeStats()
     stats.rtp_frames_sent = 100
-    stats.rtp_silence_sent = 25  # 25% > 20%
+    stats.d2p_frames_mixed = 80  # fed 80 mixed slots
+    stats.rtp_silence_sent = 50  # expected_silence=20, unexplained=30, 30% > 10%
     with caplog.at_level(logging.WARNING, logger="frizzle_phone.bridge_stats"):
         stats.log_and_reset()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("d2p starvation" in r.message for r in warnings)
+    assert any("d2p pipeline loss" in r.message for r in warnings)
+
+
+def test_log_summary_no_starvation_warn_when_nobody_speaking(caplog):
+    """All silence is expected when nobody is talking on Discord."""
+    stats = BridgeStats()
+    stats.rtp_frames_sent = 250
+    stats.rtp_silence_sent = 250
+    stats.d2p_frames_mixed = 0  # expected_silence=250, unexplained=0
+    with caplog.at_level(logging.WARNING, logger="frizzle_phone.bridge_stats"):
+        stats.log_and_reset()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert not any("pipeline loss" in r.message for r in warnings)
 
 
 def test_log_summary_no_warn_when_below_thresholds(caplog):

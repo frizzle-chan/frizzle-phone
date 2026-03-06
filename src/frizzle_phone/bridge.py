@@ -20,6 +20,7 @@ import soxr
 
 from frizzle_phone.agc import AgcBank
 from frizzle_phone.bridge_stats import BridgeStats
+from frizzle_phone.discord_voice_rx.stats import VoiceRecvStats
 from frizzle_phone.rtp import pcmu
 from frizzle_phone.rtp.pcmu import pcm16_arr_to_ulaw
 from frizzle_phone.rtp.stream import PTIME_MS, SAMPLES_PER_PACKET, build_rtp_packet
@@ -139,6 +140,7 @@ async def rtp_send_loop(
     *,
     stop_event: asyncio.Event,
     stats: BridgeStats | None = None,
+    voice_recv_stats: VoiceRecvStats | None = None,
 ) -> None:
     """Pull frames via pop_tick, mix, resample, send RTP at 20ms intervals."""
     ssrc = random.randint(0, 0xFFFFFFFF)
@@ -228,3 +230,5 @@ async def rtp_send_loop(
         if stats:
             loop.call_soon(stats.maybe_log_and_reset)
             agc_bank.expire_stale()
+        if voice_recv_stats:
+            loop.call_soon(voice_recv_stats.maybe_log_and_reset)

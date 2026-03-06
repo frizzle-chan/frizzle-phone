@@ -9,6 +9,9 @@ import aiosqlite
 import jinja2
 from aiohttp import web
 from discord.ext import commands
+from prometheus_client import generate_latest
+
+from frizzle_phone.metrics import REGISTRY, run_scrape_callbacks
 
 _db_key = web.AppKey("db", aiosqlite.Connection)
 _bot_key = web.AppKey("bot", commands.Bot)
@@ -97,6 +100,12 @@ async def _post_handler(
     raise web.HTTPSeeOther(location="/")
 
 
+async def _metrics_handler(request: web.Request) -> web.Response:
+    run_scrape_callbacks()
+    body = generate_latest(REGISTRY)
+    return web.Response(body=body, content_type="text/plain", charset="utf-8")
+
+
 def create_app(
     db: aiosqlite.Connection,
     bot: commands.Bot,
@@ -113,6 +122,7 @@ def create_app(
     app[_audio_names_key] = audio_names
     app.router.add_get("/", _get_handler)
     app.router.add_post("/extensions", _post_handler)
+    app.router.add_get("/metrics", _metrics_handler)
     return app
 
 

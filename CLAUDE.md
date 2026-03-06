@@ -64,6 +64,7 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 
 - `DESIGN.md` documents the architecture, call flow, and audio pipeline — keep it up to date when changing components, call flow, or audio bridge logic
 - When adding new technical concepts to `DESIGN.md`, add a footnote reference (`[^key]`) on the first occurrence and a footnote definition at the bottom (keep definitions sorted alphabetically by key)
+- `docs/METRICS.md` is the Prometheus metrics reference and interpretation guide — keep it up to date when adding, removing, or changing metrics in `metrics.py`, `bridge_stats.py`, or `discord_voice_rx/stats.py`
 
 ## Testing Philosophy
 
@@ -105,7 +106,8 @@ The `actions/labeler` workflow also auto-labels based on file paths and branch n
 | Symptom in logs | Likely cause |
 |---|---|
 | `d2p_dropped > 0` | RTP send loop falling behind |
-| `rtp_silence_sent` high | Discord not delivering audio frames |
+| `rtp_silence_sent` high, `d2p_frames_mixed` low | Normal — no one speaking on Discord |
+| `rtp_silence_sent` high, `d2p_frames_mixed` also high | Pipeline loss — frames consumed but not sent |
 | `rtp_max_sleep_overshoot > 5ms` | Event loop congestion |
 | `p2d_queue_overflow > 0` | Discord `read()` not keeping up |
 | `p2d_silence_reads` high, `p2d_frames_in` normal | Phone audio arriving in bursts (jitter) |

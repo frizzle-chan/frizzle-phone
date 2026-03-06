@@ -3,6 +3,8 @@
 import logging
 import time
 
+from frizzle_phone import metrics
+
 logger = logging.getLogger(__name__)
 
 _SUMMARY_INTERVAL_S = 5.0
@@ -43,6 +45,22 @@ class VoiceRecvStats:
         }
 
         self.reset()
+
+        # Feed snapshot into Prometheus counters/gauges
+        if snap["packets_in"]:
+            metrics.VOICE_RX_PACKETS_IN.inc(snap["packets_in"])
+        if snap["decrypt_fail"]:
+            metrics.VOICE_RX_DECRYPT_FAIL.inc(snap["decrypt_fail"])
+        if snap["opus_decodes"]:
+            metrics.VOICE_RX_OPUS_DECODES.inc(snap["opus_decodes"])
+        if snap["opus_errors"]:
+            metrics.VOICE_RX_OPUS_ERRORS.inc(snap["opus_errors"])
+        if snap["ticks_empty"]:
+            metrics.VOICE_RX_TICKS_EMPTY.inc(snap["ticks_empty"])
+        if snap["ticks_served"]:
+            metrics.VOICE_RX_TICKS_SERVED.inc(snap["ticks_served"])
+        metrics.VOICE_RX_MAX_CALLBACK_US.set(snap["max_callback_us"])
+        metrics.VOICE_RX_MAX_DECODE_US.set(snap["max_decode_us"])
 
         logger.info(
             "voice_recv stats | pkts_in=%d decrypt_fail=%d opus=%d/%d "

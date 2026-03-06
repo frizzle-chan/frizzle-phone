@@ -24,6 +24,7 @@ import aiosqlite
 from discord.ext import commands
 
 from frizzle_phone.bridge_manager import BridgeHandle, BridgeManager
+from frizzle_phone.metrics import ACTIVE_CALLS, register_scrape_callback
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
     SipMessage,
@@ -204,6 +205,7 @@ class SipServer(asyncio.DatagramProtocol):
         self._bridge_manager = bridge_manager or BridgeManager()
         self._voice_connector = voice_connector or DiscordVoiceConnector(bot)
         self._db_update_errors: int = 0
+        register_scrape_callback(lambda: ACTIVE_CALLS.set(len(self._calls)))
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
             "INVITE": self._handle_invite,
@@ -583,6 +585,7 @@ class SipServer(asyncio.DatagramProtocol):
                     "Failed to connect to voice channel %s", result.channel_id
                 )
                 self._calls.pop(call_id, None)
+
                 self._send(
                     build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
                     resp_addr,
@@ -663,6 +666,7 @@ class SipServer(asyncio.DatagramProtocol):
             response = build_response(msg, 481, "Call/Transaction Does Not Exist")
             self._send(response, resp_addr)
             return
+
         self._terminate_call(call)
         if call.db_call_id:
             self._fire_and_forget(
@@ -702,6 +706,7 @@ class SipServer(asyncio.DatagramProtocol):
         # RFC 3261 §9.2: CANCEL matched a transaction still in PROCEEDING.
         # First, respond 200 OK to the CANCEL itself.
         self._calls.pop(call_id, None)
+
         ok = build_response(msg, 200, "OK", to_tag=call.to_tag)
         self._send(ok, resp_addr)
 
@@ -968,6 +973,7 @@ class SipServer(asyncio.DatagramProtocol):
         """Stop all active calls and transactions during shutdown."""
         calls = list(self._calls.values())
         self._calls.clear()
+
         for call in calls:
             self._terminate_call(call)
         # Terminate any orphaned transactions not linked to a call
