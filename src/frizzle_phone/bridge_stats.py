@@ -9,6 +9,8 @@ incur call overhead on every frame.
 import logging
 import time
 
+from frizzle_phone import metrics
+
 logger = logging.getLogger(__name__)
 
 _SUMMARY_INTERVAL_S = 5.0
@@ -69,6 +71,29 @@ class BridgeStats:
         }
 
         self.reset()
+
+        # Feed snapshot into Prometheus counters/gauges
+        if snap["d2p_mixed"]:
+            metrics.BRIDGE_D2P_MIXED.inc(snap["d2p_mixed"])
+        if snap["d2p_dropped"]:
+            metrics.BRIDGE_D2P_DROPPED.inc(snap["d2p_dropped"])
+        if snap["p2d_in"]:
+            metrics.BRIDGE_P2D_IN.inc(snap["p2d_in"])
+        if snap["p2d_overflow"]:
+            metrics.BRIDGE_P2D_OVERFLOW.inc(snap["p2d_overflow"])
+        if snap["p2d_reads"]:
+            metrics.BRIDGE_P2D_READS.inc(snap["p2d_reads"])
+        if snap["p2d_silence"]:
+            metrics.BRIDGE_P2D_SILENCE.inc(snap["p2d_silence"])
+        if snap["p2d_gap_warns"]:
+            metrics.BRIDGE_P2D_GAP_WARNS.inc(snap["p2d_gap_warns"])
+        if snap["rtp_sent"]:
+            metrics.BRIDGE_RTP_SENT.inc(snap["rtp_sent"])
+        if snap["rtp_silence"]:
+            metrics.BRIDGE_RTP_SILENCE.inc(snap["rtp_silence"])
+        metrics.BRIDGE_D2P_QDEPTH.set(snap["d2p_qdepth"])
+        metrics.BRIDGE_P2D_MAX_GAP.set(snap["p2d_max_gap"])
+        metrics.BRIDGE_RTP_OVERSHOOT.set(snap["rtp_overshoot"])
 
         logger.info(
             "bridge stats | d2p mixed=%d dropped=%d "

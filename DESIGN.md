@@ -161,6 +161,12 @@ Both directions use `soxr.LQ` (sinc-based, ~96dB stopband[^stopband] rejection) 
 
 **Why `ChunkedResampler`:** Sinc-based soxr modes (`LQ`+) buffer internally and emit samples in variable-size bursts rather than a steady 1:ratio output. `ChunkedResampler` accumulates resampler output and yields exactly the expected frame size (160 samples at 8kHz for d2p, 960 samples at 48kHz for p2d) so the rest of the pipeline sees a consistent chunk per feed.
 
+## Observability
+
+[`metrics.py`](src/frizzle_phone/metrics.py): Prometheus[^prometheus] metrics exposed on `GET /metrics` (port 8080). Uses a custom `CollectorRegistry` for test isolation. All metrics use `frizzle_bridge_`, `frizzle_voice_rx_`, or `frizzle_` prefixes.
+
+**Update cadence:** Counters and gauges are fed from the existing 5-second snapshot-and-reset cycle in `BridgeStats` and `VoiceRecvStats`. The hot path (per-frame) stays zero-overhead — Prometheus objects are only touched during periodic `log_and_reset()` calls. The `frizzle_active_calls` gauge is refreshed at scrape time via a callback. See [`docs/METRICS.md`](docs/METRICS.md) for the full metric reference and interpretation guide.
+
 [^agc]: AGC, [Automatic gain control](https://en.wikipedia.org/wiki/Automatic_gain_control): normalizes audio levels per speaker
 [^aiohttp]: [aiohttp](https://docs.aiohttp.org/en/stable/): async HTTP server/client framework for Python
 [^aiosqlite]: [aiosqlite](https://pypi.org/project/aiosqlite/): async wrapper for Python's sqlite3
@@ -179,6 +185,7 @@ Both directions use `soxr.LQ` (sinc-based, ~96dB stopband[^stopband] rejection) 
 [^nacl]: [NaCl](https://nacl.cr.yp.to/): networking and cryptography library for voice packet encryption
 [^noisegate]: [Noise gate](https://en.wikipedia.org/wiki/Noise_gate): silences signal below a threshold
 [^opus]: [Opus](https://en.wikipedia.org/wiki/Opus_(audio_format)): low-latency audio codec used by Discord
+[^prometheus]: [Prometheus](https://prometheus.io/): open-source monitoring and alerting toolkit
 [^rfc3261]: [RFC 3261](https://datatracker.ietf.org/doc/html/rfc3261): core SIP specification
 [^rms]: RMS, [Root mean square](https://en.wikipedia.org/wiki/Root_mean_square): measure of signal amplitude
 [^rtp]: RTP, [Real-time Transport Protocol](https://en.wikipedia.org/wiki/Real-time_Transport_Protocol): carries audio/video over UDP
