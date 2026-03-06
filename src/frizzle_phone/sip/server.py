@@ -5,11 +5,11 @@
 #   1. SIP protocol parsing/routing (datagram_received, handler dispatch)
 #   2. SIP transaction lifecycle (INVITE txn setup, Timer G/H/I)
 #   3. Database persistence (INSERT/UPDATE via aiosqlite)
-#   4. Discord voice channel orchestration (guild/channel lookup, voice connect)
+#   4. Discord voice channel orchestration (extracted → VoiceConnector protocol)
 #   5. Call state management (Call lifecycle, _PendingBridge → DiscordBridgeContext)
 #   6. RTP port reservation and stream lifecycle
-# Extraction order: start with (3) as a CallRepository, then (4) as a
-# VoiceConnector, leaving SIP protocol core in SipServer.
+# Extraction order: start with (3) as a CallRepository, leaving SIP
+# protocol core in SipServer.
 
 from __future__ import annotations
 
@@ -21,11 +21,9 @@ import uuid
 from collections.abc import Callable, Coroutine
 
 import aiosqlite
-import discord
 from discord.ext import commands
 
 from frizzle_phone.bridge_manager import BridgeHandle, BridgeManager
-from frizzle_phone.discord_voice_rx import VoiceRecvClient
 from frizzle_phone.rtp.stream import RtpStream
 from frizzle_phone.sip.message import (
     SipMessage,
@@ -40,6 +38,8 @@ from frizzle_phone.sip.message import (
 )
 from frizzle_phone.sip.sdp import build_sdp_answer, parse_sdp_offer
 from frizzle_phone.sip.transaction import InviteServerTxn, TxnState
+from frizzle_phone.voice_connector import DiscordVoiceConnector
+from frizzle_phone.voice_protocols import BridgeableVoiceClient, VoiceConnector
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def _compute_response_addr(msg: SipMessage, addr: tuple[str, int]) -> tuple[str,
 class PendingBridge:
     """Transient state between INVITE (voice connect) and ACK (bridge start)."""
 
-    voice_client: VoiceRecvClient
+    voice_client: BridgeableVoiceClient
     guild_id: int
     channel_id: int
 
@@ -132,7 +132,7 @@ class PendingBridge:
 class DiscordBridgeContext:
     """Active Discord voice bridge state."""
 
-    voice_client: VoiceRecvClient
+    voice_client: BridgeableVoiceClient
     guild_id: int
     channel_id: int
     handle: BridgeHandle
@@ -190,6 +190,7 @@ class SipServer(asyncio.DatagramProtocol):
         audio_buffers: dict[str, bytes],
         bot: commands.Bot,
         bridge_manager: BridgeManager | None = None,
+        voice_connector: VoiceConnector | None = None,
     ) -> None:
         self._transport: asyncio.DatagramTransport | None = None
         self._calls: dict[str, Call] = {}
@@ -201,6 +202,7 @@ class SipServer(asyncio.DatagramProtocol):
         self._audio_buffers = audio_buffers
         self._bot = bot
         self._bridge_manager = bridge_manager or BridgeManager()
+        self._voice_connector = voice_connector or DiscordVoiceConnector(bot)
         self._db_update_errors: int = 0
         self._handlers: dict[str, _HandlerType] = {
             "REGISTER": self._handle_register,
@@ -560,26 +562,9 @@ class SipServer(asyncio.DatagramProtocol):
         if result.guild_id is not None:
             if result.channel_id is None:
                 raise ValueError("Discord extension missing channel_id")
-            guild = self._bot.get_guild(result.guild_id)
-            if guild is None:
-                self._calls.pop(call_id, None)
-                self._send(
-                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
-                    resp_addr,
-                )
-                return
-            channel = guild.get_channel(result.channel_id)
-            if channel is None or not isinstance(channel, discord.VoiceChannel):
-                self._calls.pop(call_id, None)
-                self._send(
-                    build_response(msg, 503, "Service Unavailable", to_tag=to_tag),
-                    resp_addr,
-                )
-                return
             try:
-                vc = await asyncio.wait_for(
-                    channel.connect(cls=VoiceRecvClient),
-                    timeout=10.0,
+                vc = await self._voice_connector.connect(
+                    result.guild_id, result.channel_id
                 )
                 if call.terminated:
                     vc.stop()
@@ -1007,9 +992,16 @@ async def start_server(
     db: aiosqlite.Connection,
     audio_buffers: dict[str, bytes],
     bot: commands.Bot,
+    voice_connector: VoiceConnector | None = None,
 ) -> tuple[asyncio.DatagramTransport, SipServer]:
     loop = asyncio.get_running_loop()
-    server = SipServer(server_ip=server_ip, db=db, audio_buffers=audio_buffers, bot=bot)
+    server = SipServer(
+        server_ip=server_ip,
+        db=db,
+        audio_buffers=audio_buffers,
+        bot=bot,
+        voice_connector=voice_connector,
+    )
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=(host, port)
     )

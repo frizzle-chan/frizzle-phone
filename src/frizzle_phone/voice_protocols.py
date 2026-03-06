@@ -1,0 +1,29 @@
+"""Protocols for voice client abstraction."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    import numpy as np
+
+
+@runtime_checkable
+class BridgeableVoiceClient(Protocol):
+    """Interface for voice clients used by BridgeManager and SipServer."""
+
+    def play(self, source: object) -> None: ...
+    def start_listening(self) -> None: ...
+    def stop(self) -> None: ...
+    def stop_listening(self) -> None: ...
+    def pop_tick(self) -> dict[int, np.ndarray]: ...
+    def is_connected(self) -> bool: ...
+    async def disconnect(self, *, force: bool = False) -> None: ...
+
+
+class VoiceConnector(Protocol):
+    """Interface for connecting to a voice channel."""
+
+    async def connect(
+        self, guild_id: int, channel_id: int
+    ) -> BridgeableVoiceClient: ...

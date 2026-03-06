@@ -65,6 +65,14 @@ Lefthook runs ruff, ty, vulture, and pytest on pre-commit. Direct commits to `ma
 - `DESIGN.md` documents the architecture, call flow, and audio pipeline — keep it up to date when changing components, call flow, or audio bridge logic
 - When adding new technical concepts to `DESIGN.md`, add a footnote reference (`[^key]`) on the first occurrence and a footnote definition at the bottom (keep definitions sorted alphabetically by key)
 
+## Testing Philosophy
+
+- **Strongly prefer E2E/integration tests over mocks.** Write code that is testable through real interfaces (protocols, in-memory DBs, real UDP sockets, etc.) rather than patching internals.
+- **Mocking is a last resort** — only mock when the real dependency is truly unavailable in tests (e.g. Discord gateway, external APIs). If you can use a test double (fake/stub) that implements a protocol, prefer that over `unittest.mock`.
+- **Don't add a unit test if the functionality is already covered by an integration test.** Redundant tests are maintenance burden. Check existing E2E tests before writing new ones.
+- **Design for testability** — use dependency injection, protocols, and thin wrappers around external services so the real logic can be exercised without mocks.
+- **Review plans for SOLID principles** — before implementing, check that the design uses dependency inversion (depend on protocols, not concretions), single responsibility, and interface segregation so that components are inherently testable without mocks.
+
 ## Conventions
 
 - PR target branch: `main`

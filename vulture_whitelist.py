@@ -32,3 +32,6 @@ FakePacket  # type: ignore[name-defined]
 _.__lt__  # type: ignore[name-defined]
 _.__eq__  # type: ignore[name-defined]
 _.__bool__  # type: ignore[name-defined]
+
+# BridgeableVoiceClient.disconnect(*, force) — protocol/test-double keyword arg
+force  # type: ignore[name-defined]
