@@ -65,6 +65,9 @@ class VoiceRecvClient(discord.VoiceClient):
         self._recv_stats = VoiceRecvStats()
         self._decoder_thread = DecoderThread(stats=self._recv_stats)
         self._decoder_thread.start()
+        # Propagate SSRC→user mappings received before listening started
+        for ssrc, user_id in self._ssrc_to_id.items():
+            self._decoder_thread.set_ssrc_user(ssrc, user_id)
         self._connection.add_socket_listener(self._socket_callback_fn)
 
     def stop_listening(self) -> None:
