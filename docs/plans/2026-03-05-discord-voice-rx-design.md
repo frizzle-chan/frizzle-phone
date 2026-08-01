@@ -116,31 +116,31 @@ class VoiceRecvClient(discord.VoiceClient):
 ```python
 class VoiceRecvStats:
     # Packet-level
-    packets_in: int = 0              # total RTP packets received
-    packets_decrypted: int = 0       # successfully decrypted
+    packets_in: int = 0  # total RTP packets received
+    packets_decrypted: int = 0  # successfully decrypted
     packets_decrypt_failed: int = 0  # nacl/DAVE failures (skipped)
-    packets_rtcp: int = 0            # RTCP packets (counted, not processed)
+    packets_rtcp: int = 0  # RTCP packets (counted, not processed)
 
     # Decode
-    opus_decodes: int = 0            # successful opus decodes
-    opus_fec_recoveries: int = 0     # frames recovered via FEC
-    opus_errors: int = 0             # corrupt opus packets (skipped)
-    max_decode_us: int = 0           # peak opus decode time in us
+    opus_decodes: int = 0  # successful opus decodes
+    opus_fec_recoveries: int = 0  # frames recovered via FEC
+    opus_errors: int = 0  # corrupt opus packets (skipped)
+    max_decode_us: int = 0  # peak opus decode time in us
 
     # Jitter buffer
-    jitter_reordered: int = 0        # packets delivered out of order
-    jitter_duplicates: int = 0       # duplicate packets dropped
-    jitter_overflow: int = 0         # packets dropped (buffer full)
+    jitter_reordered: int = 0  # packets delivered out of order
+    jitter_duplicates: int = 0  # duplicate packets dropped
+    jitter_overflow: int = 0  # packets dropped (buffer full)
 
     # Per-user buffering
-    buffer_depth_max: int = 0        # peak frames across any user
-    tick_users_max: int = 0          # peak concurrent users in a tick
-    ticks_empty: int = 0             # pop_tick() calls that returned empty
-    ticks_served: int = 0            # pop_tick() calls with data
+    buffer_depth_max: int = 0  # peak frames across any user
+    tick_users_max: int = 0  # peak concurrent users in a tick
+    ticks_empty: int = 0  # pop_tick() calls that returned empty
+    ticks_served: int = 0  # pop_tick() calls with data
 
     # Timing
-    max_callback_us: int = 0         # peak time in socket callback (decrypt)
-    max_thread_loop_us: int = 0      # peak time in decoder thread iteration
+    max_callback_us: int = 0  # peak time in socket callback (decrypt)
+    max_thread_loop_us: int = 0  # peak time in decoder thread iteration
 ```
 
 Logged every ~5s alongside BridgeStats, grep-friendly with `voice_recv stats` prefix.
