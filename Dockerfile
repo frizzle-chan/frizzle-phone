@@ -4,7 +4,7 @@ LABEL org.opencontainers.image.source=https://github.com/frizzle-chan/frizzle-ph
 
 ARG GIT_COMMIT=unknown
 
-COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 RUN groupadd --gid 1000 frizzle_phone \
  && useradd --uid 1000 --gid 1000 -m frizzle_phone --shell /bin/bash \
