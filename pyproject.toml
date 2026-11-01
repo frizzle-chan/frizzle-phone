@@ -37,6 +37,13 @@ dev = [
     "pytest-regressions>=2.5",
 ]
 
+[tool.uv]
+# Dependency cooldown: ignore releases newer than 7 days when resolving.
+# Matches the Dependabot cooldown and reduces exposure to compromised or
+# quickly-yanked releases. Relative values need uv >= 0.9.18.
+exclude-newer = "7 days"
+required-version = ">=0.9.18"
+
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_unit_test.py"]
 addopts = "--cov=frizzle_phone --cov-report=term-missing:skip-covered --cov-report=xml"
