@@ -8,11 +8,11 @@ dependencies = [
     "aiohttp>=3.11",
     "aiohttp-jinja2>=1.6",
     "aiosqlite>=0.20.0",
-    "davey>=0.1.4",
+    "davey>=0.1.6",
     "discord-py[voice]>=2.7.0",
     "prometheus-client>=0.21",
     "python-dotenv>=1.2.1",
-    "soxr>=0.5.0",
+    "soxr>=1.1.0",
 ]
 
 [project.scripts]
@@ -28,9 +28,9 @@ packages = ["src/frizzle_phone"]
 [dependency-groups]
 dev = [
     "lefthook>=2.0.13",
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=0.24",
-    "pytest-cov>=6.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.14.10",
     "ty>=0.0.8",
     "vulture>=2.14",
