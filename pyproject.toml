@@ -37,6 +37,14 @@ dev = [
     "pytest-regressions>=2.5",
 ]
 
+[tool.uv]
+# Dependency cooldown: ignore releases newer than 7 days when resolving.
+# Matches the Dependabot cooldown and reduces exposure to compromised or
+# quickly-yanked releases.
+exclude-newer = "7 days"
+# 0.13.5 rejects certificate chains with the compromised eMudhra keys.
+required-version = ">=0.13.5"
+
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_unit_test.py"]
 addopts = "--cov=frizzle_phone --cov-report=term-missing:skip-covered --cov-report=xml"
