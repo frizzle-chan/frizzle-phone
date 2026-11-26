@@ -56,6 +56,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            # Immutable, sortable tag (<UTC commit time>-<short sha>) for Flux image
+            # automation in austinpray/yui.ski; only for the default branch.
+            type=raw,value={{commit_date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
 
       - name: Prepare platform pair
         id: platform
@@ -218,6 +221,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            # Immutable, sortable tag (<UTC commit time>-<short sha>) for Flux image
+            # automation in austinpray/yui.ski; only for the default branch.
+            type=raw,value={{commit_date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
